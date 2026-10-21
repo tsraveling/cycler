@@ -13,12 +13,13 @@ var testNow = time.Date(2026, 10, 21, 14, 0, 0, 0, time.Local)
 
 // isolates config and pins the clock; the returned func moves the clock
 func setup(t *testing.T) func(time.Time) {
+	prevDir := configDirFn
 	dir := t.TempDir()
 	configDirFn = func() string { return dir }
 	now := testNow
 	nowFn = func() time.Time { return now }
 	notifyFn = func(string) {}
-	t.Cleanup(func() { nowFn = time.Now; notifyFn = notifyDone })
+	t.Cleanup(func() { nowFn = time.Now; notifyFn = notifyDone; configDirFn = prevDir })
 	return func(n time.Time) { now = n }
 }
 
@@ -326,11 +327,12 @@ func TestConfigEdits(t *testing.T) {
 		t.Fatalf("duration edit: %+v", m.s)
 	}
 
+	// B was moved above A without running, so it is the next open item
 	m = send(m, "d", "y")
-	if len(m.c.Items) != 2 || m.s.Current != c || m.s.Timer != timerIdle {
-		t.Fatalf("deleting current should hand off to next: %+v", m.s)
+	if len(m.c.Items) != 2 || m.s.Current != b || m.s.Timer != timerIdle {
+		t.Fatalf("deleting current should hand off to next open: %+v", m.s)
 	}
-	_ = b
+	_ = c
 }
 
 func TestLayoutFits(t *testing.T) {
@@ -369,5 +371,80 @@ func TestLayoutFits(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestReorderKeepsProgress(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A", "B", "C")
+	a, b, c := m.c.Items[0].ID, m.c.Items[1].ID, m.c.Items[2].ID
+
+	// A done, then moved last: still done, C runs next, C closes the cycle
+	m = send(m, "enter", "y", "c", "k", "J", "J", "esc")
+	if !m.s.doneThisCycle(a) || m.s.Current != b {
+		t.Fatalf("progress lost: %+v", m.s)
+	}
+	m = send(m, "enter", "y")
+	if m.s.Current != c {
+		t.Fatal("C should run after B")
+	}
+	m = send(m, "enter", "y")
+	if !m.s.Log[2].Last || len(m.s.CycleDone) != 0 {
+		t.Fatal("C should close the cycle")
+	}
+
+}
+
+func TestReorderOpenAboveCurrent(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A", "B", "C")
+	b, c := m.c.Items[1].ID, m.c.Items[2].ID
+
+	m = send(m, "enter", "y", "c", "j", "K", "esc")
+	if m.c.Items[1].ID != c || m.s.Current != b {
+		t.Fatalf("setup: %+v", m.s)
+	}
+	m = send(m, "enter", "y")
+	if m.s.Current != c {
+		t.Fatal("C moved above B should still run this cycle")
+	}
+	m = send(m, "enter", "y")
+	if !m.s.Log[2].Last {
+		t.Fatal("C should close the cycle")
+	}
+}
+
+func TestSourcesMsg(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A")
+	id := m.c.Items[0].ID
+	stale := m.sourcesCmd()
+	m.c.Items[0].SourceConfig = "fresh"
+	fresh := m.sourcesCmd()
+
+	next, _ := m.Update(fresh())
+	m = next.(model)
+	next, _ = m.Update(stale())
+	m = next.(model)
+	if m.src[id].text != "fresh" || m.srcPending != 0 {
+		t.Fatalf("stale read applied: %+v pending %d", m.src[id], m.srcPending)
+	}
+}
+
+func TestLoadConfigRepairsIDs(t *testing.T) {
+	setup(t)
+	writeJSON(configPath(), &config{Items: []item{
+		{Name: "A", Seconds: 60, Source: srcStatic},
+		{ID: "x", Name: "B", Seconds: 60, Source: srcStatic},
+		{ID: "x", Name: "C", Seconds: 60, Source: srcStatic},
+	}})
+	c1 := loadConfig()
+	c2 := loadConfig()
+	ids := map[string]bool{}
+	for i, it := range c1.Items {
+		if it.ID == "" || ids[it.ID] || c2.Items[i].ID != it.ID {
+			t.Fatalf("ids not repaired and persisted: %+v / %+v", c1.Items, c2.Items)
+		}
+		ids[it.ID] = true
 	}
 }

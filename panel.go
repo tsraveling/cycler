@@ -71,13 +71,7 @@ func timerBlock(big string, denom string, style lipgloss.Style, cw, termH int) [
 func stackContent(head []string, block []string, help []string, ch int) []string {
 	lines := make([]string, ch)
 	copy(lines, head)
-
-	helpAt := ch - 1 - len(help)
-	for i, hl := range help {
-		if helpAt+i >= len(head) && helpAt+i < ch {
-			lines[helpAt+i] = hl
-		}
-	}
+	helpAt := placeHelp(lines, help, len(head))
 
 	regionTop := len(head)
 	regionH := max(0, helpAt-regionTop)
@@ -88,6 +82,18 @@ func stackContent(head []string, block []string, help []string, ch int) []string
 		}
 	}
 	return lines
+}
+
+// writes help into the bottom of lines, leaving the last row blank and never
+// overwriting the first top rows. returns the row the help starts on.
+func placeHelp(lines, help []string, top int) int {
+	at := len(lines) - 1 - len(help)
+	for i, hl := range help {
+		if r := at + i; r >= top && r < len(lines) {
+			lines[r] = hl
+		}
+	}
+	return at
 }
 
 // rows available to a centered block once head, help and the blank above the

@@ -127,6 +127,7 @@ func (s *dayState) reconcile(c *config) {
 	}
 	it := c.byID(s.Current)
 	if it == nil {
+		s.CycleDone = nil
 		s.setCurrent(c, 0)
 		return
 	}
@@ -142,25 +143,46 @@ func (s *dayState) reconcile(c *config) {
 func (s *dayState) advance(c *config, skipped bool) {
 	i := c.indexOf(s.Current)
 	if i < 0 {
+		s.CycleDone = nil
 		s.setCurrent(c, 0)
 		return
 	}
-	last := i == len(c.Items)-1
-	s.Log = append(s.Log, entry{ItemID: s.Current, Name: c.Items[i].Name, Skipped: skipped, Last: last})
-	if last {
+	next := s.nextOpen(c)
+	s.Log = append(s.Log, entry{ItemID: s.Current, Name: c.Items[i].Name, Skipped: skipped, Last: next < 0})
+	if next < 0 {
 		s.CycleDone = nil
 		s.setCurrent(c, 0)
 		return
 	}
 	s.CycleDone = append(s.CycleDone, s.Current)
-	s.setCurrent(c, i+1)
+	s.setCurrent(c, next)
 }
 
-// index of the item after the current one, wrapping
-func nextIndex(c *config, id string) int {
-	i := c.indexOf(id)
-	if i < 0 || len(c.Items) == 0 {
-		return 0
+// moves on from a current item that left the list without being logged. when
+// it was the last open one the cycle closes on the newest entry of this cycle.
+func (s *dayState) handOff(c *config) {
+	next := s.nextOpen(c)
+	if next < 0 {
+		if n := len(s.Log); n > 0 && s.doneThisCycle(s.Log[n-1].ItemID) {
+			s.Log[n-1].Last = true
+		}
+		s.CycleDone = nil
 	}
-	return (i + 1) % len(c.Items)
+	s.setCurrent(c, max(0, next))
+}
+
+// first item in list order not yet done this cycle, other than the current
+// one; -1 when the current item closes the cycle
+func (s *dayState) nextOpen(c *config) int {
+	for i, it := range c.Items {
+		if it.ID != s.Current && !s.doneThisCycle(it.ID) {
+			return i
+		}
+	}
+	return -1
+}
+
+// the item that runs after the current one, wrapping into a new cycle
+func (s *dayState) upcoming(c *config) int {
+	return max(0, s.nextOpen(c))
 }

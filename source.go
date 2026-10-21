@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -24,14 +25,7 @@ const (
 
 var sourceTypes = []sourceType{srcMarkdown, srcDrawdeck, srcDispositio, srcStatic}
 
-func (t sourceType) valid() bool {
-	for _, s := range sourceTypes {
-		if s == t {
-			return true
-		}
-	}
-	return false
-}
+func (t sourceType) valid() bool { return slices.Contains(sourceTypes, t) }
 
 func (t sourceType) label() string {
 	switch t {

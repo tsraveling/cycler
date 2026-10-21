@@ -10,17 +10,18 @@ import (
 // below this terminal width the detail pane is dropped
 const detailMinCols = 60
 
-func (m *model) openConfig() {
+func (m *model) openConfig() tea.Cmd {
 	m.prompt = nil
 	m.sel = max(0, m.c.indexOf(m.s.Current))
 	m.scr = scrConfig
+	return m.sourcesCmd()
 }
 
-func (m *model) leaveConfig() {
+func (m *model) leaveConfig() tea.Cmd {
 	m.s.reconcile(m.c)
 	m.s.save()
-	m.refreshSources()
 	m.scr = m.homeScreen()
+	return m.sourcesCmd()
 }
 
 func (m model) updateConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -37,8 +38,8 @@ func (m model) updateConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		return m, m.openForm(-1)
 	case "esc":
-		m.leaveConfig()
-		return m, nil
+		cmd := m.leaveConfig()
+		return m, cmd
 	case "?":
 		m.toggleHelp()
 		return m, nil
@@ -74,17 +75,12 @@ func (m *model) moveSelected(dir int) {
 	m.c.save()
 }
 
-// deleting the current item hands the cycle to the item that followed it
 func (m *model) deleteSelected() {
 	i := m.sel
 	id := m.c.Items[i].ID
 	m.c.Items = append(m.c.Items[:i], m.c.Items[i+1:]...)
 	if id == m.s.Current {
-		if i >= len(m.c.Items) {
-			m.s.CycleDone = nil
-			i = 0
-		}
-		m.s.setCurrent(m.c, i)
+		m.s.handOff(m.c)
 		m.carry = 0
 	}
 	m.s.reconcile(m.c)
@@ -137,12 +133,7 @@ func (m model) configView() string {
 
 	out := make([]string, ch)
 	copy(out, lines)
-	helpAt := ch - 1 - len(help)
-	for i, hl := range help {
-		if helpAt+i >= len(head) {
-			out[helpAt+i] = hl
-		}
-	}
+	placeHelp(out, help, len(head))
 	return renderPanel(out, w, h, orange)
 }
 

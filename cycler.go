@@ -22,7 +22,8 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleHelp()
 
 	case "c", "C":
-		m.openConfig()
+		cmd := m.openConfig()
+		return m, cmd
 
 	case " ":
 		switch m.s.Timer {
@@ -34,13 +35,14 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.s.Timer = timerPaused
 			m.s.save()
 		case timerDone:
-			m.advance(false)
+			cmd := m.advance(false)
+			return m, cmd
 		}
 
 	case "enter":
 		if m.s.Timer == timerDone {
-			m.advance(false)
-			return m, nil
+			cmd := m.advance(false)
+			return m, cmd
 		}
 		m.prompt = newConfirm(confirmComplete, "Complete early?")
 
@@ -62,9 +64,11 @@ func (m model) handleCyclerPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch kind {
 	case confirmComplete:
-		m.advance(false)
+		cmd := m.advance(false)
+		return m, cmd
 	case confirmSkip:
-		m.advance(true)
+		cmd := m.advance(true)
+		return m, cmd
 	case confirmFinish:
 		m.fin = finishFor(m.s)
 		m.s = freshState(logicalDate(nowFn()), m.c)
@@ -75,11 +79,11 @@ func (m model) handleCyclerPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) advance(skipped bool) {
+func (m *model) advance(skipped bool) tea.Cmd {
 	m.s.advance(m.c, skipped)
 	m.carry = 0
 	m.s.save()
-	m.refreshSources()
+	return m.sourcesCmd()
 }
 
 // @region cycler:view -- CRUMBS, COUNTER, TIMER, SOURCE
@@ -144,7 +148,7 @@ func (m model) sourceLine() (string, lipgloss.Style) {
 		return m.prompt.prompt + " y/n", promptStyle
 	}
 	if m.s.Timer == timerDone {
-		next := m.c.Items[nextIndex(m.c, m.s.Current)]
+		next := m.c.Items[m.s.upcoming(m.c)]
 		r := m.src[next.ID]
 		return "Next: " + next.Name + ": " + r.text, r.style()
 	}
@@ -284,8 +288,8 @@ func (m model) renderCounter(cw int) string {
 	for _, e := range m.s.Log {
 		dots = append(dots, dot{counterGlyph(e.Skipped, e.Last), grayStyle})
 	}
-	if i := m.c.indexOf(m.s.Current); i >= 0 {
-		dots = append(dots, dot{counterGlyph(false, i == len(m.c.Items)-1), m.activeStyle()})
+	if m.c.indexOf(m.s.Current) >= 0 {
+		dots = append(dots, dot{counterGlyph(false, m.s.nextOpen(m.c) < 0), m.activeStyle()})
 	}
 
 	// each dot is budgeted two cols: the glyph plus its separator

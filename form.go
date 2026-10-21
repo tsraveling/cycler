@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -69,14 +70,9 @@ func newForm(it *item, w int) *form {
 		f.mins.SetValue(strconv.Itoa(it.Seconds / 60))
 		f.secs.SetValue(fmt.Sprintf("%02d", it.Seconds%60))
 		f.src.SetValue(it.SourceConfig)
-		for i, t := range sourceTypes {
-			if t == it.Source {
-				f.typ = i
-			}
-		}
+		f.typ = max(0, slices.Index(sourceTypes, it.Source))
 	}
 	f.orig = f.values()
-	f.setFocus(fName)
 	f.refreshPreview()
 	return f
 }
@@ -104,17 +100,26 @@ func (f *form) inputs() map[field]*textinput.Model {
 	return map[field]*textinput.Model{fName: &f.name, fMin: &f.mins, fSec: &f.secs, fSrc: &f.src}
 }
 
-func (f *form) setFocus(to field) {
+func (f *form) setFocus(to field) tea.Cmd {
 	f.focus = to
+	var cmd tea.Cmd
 	for k, in := range f.inputs() {
 		if k == to {
-			in.Focus()
+			cmd = in.Focus()
 			in.CursorEnd()
 		} else {
 			in.Blur()
 		}
 	}
+	return cmd
 }
+
+type previewKey struct {
+	typ sourceType
+	cfg string
+}
+
+func (f *form) key() previewKey { return previewKey{sourceTypes[f.typ], f.src.Value()} }
 
 func (f *form) refreshPreview() {
 	f.preview = readSource(sourceTypes[f.typ], f.src.Value())
@@ -152,7 +157,7 @@ func (m *model) openForm(idx int) tea.Cmd {
 	m.f = newForm(it, m.w)
 	m.prompt = nil
 	m.scr = scrForm
-	return textinput.Blink
+	return m.f.setFocus(fName)
 }
 
 func (m *model) closeForm() {
@@ -174,11 +179,9 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch key {
 	case "tab":
-		f.setFocus((f.focus + 1) % fieldCount)
-		return m, nil
+		return m, f.setFocus((f.focus + 1) % fieldCount)
 	case "shift+tab":
-		f.setFocus((f.focus + fieldCount - 1) % fieldCount)
-		return m, nil
+		return m, f.setFocus((f.focus + fieldCount - 1) % fieldCount)
 	case "esc":
 		f.setFocus(fButtons)
 		f.cancelSel = true
@@ -186,15 +189,13 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if f.focus != fButtons {
-			f.setFocus(f.focus + 1)
-			return m, nil
+			return m, f.setFocus(f.focus + 1)
 		}
 		if f.cancelSel {
 			m.cancelForm()
-		} else {
-			m.saveForm()
+			return m, nil
 		}
-		return m, nil
+		return m, m.saveForm()
 	}
 
 	switch f.focus {
@@ -267,17 +268,17 @@ func (m *model) cancelForm() {
 	m.closeForm()
 }
 
-func (m *model) saveForm() {
+func (m *model) saveForm() tea.Cmd {
 	f := m.f
 	name := strings.TrimSpace(f.name.Value())
 	if name == "" {
 		f.err = "Name is required"
-		return
+		return nil
 	}
 	secs, msg := f.duration()
 	if msg != "" {
 		f.err = msg
-		return
+		return nil
 	}
 
 	it := item{
@@ -312,8 +313,11 @@ func (m *model) saveForm() {
 
 	m.c.save()
 	m.s.save()
-	m.refreshSources()
+	// supersede any read issued before the edit
+	m.srcGen++
+	m.src[it.ID] = f.preview
 	m.closeForm()
+	return nil
 }
 
 // @region form:view -- FIELD LAYOUT

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,6 +54,11 @@ type model struct {
 	carry    float64
 	// paused-state blink phase, flipped every tick
 	blink bool
+
+	// newest source read issued, and reads still running
+	srcGen     int
+	srcPending int
+	srcIssued  time.Time
 
 	// config list selection
 	sel int
@@ -110,13 +116,53 @@ func (m model) homeScreen() screen {
 
 func (m model) Init() tea.Cmd { return tickCmd() }
 
-func (m *model) refreshSources() {
-	m.src = make(map[string]sourceResult, len(m.c.Items))
-	for _, it := range m.c.Items {
-		m.src[it.ID] = readSource(it.Source, it.SourceConfig)
+type sourcesMsg struct {
+	gen     int
+	results map[string]sourceResult
+	// the open form's preview and the input it was read for
+	preview *sourceResult
+	from    previewKey
+}
+
+// a read still running after this long no longer holds back the poll, up to
+// maxSrcPending stuck reads
+const (
+	srcStaleAfter = 10 * time.Second
+	maxSrcPending = 3
+)
+
+func readSources(items []item) map[string]sourceResult {
+	out := make(map[string]sourceResult, len(items))
+	for _, it := range items {
+		out[it.ID] = readSource(it.Source, it.SourceConfig)
 	}
+	return out
+}
+
+// reads every source inline; only for startup
+func (m *model) refreshSources() {
+	m.src = readSources(m.c.Items)
+}
+
+// reads every source off the update loop. only the newest read is applied.
+func (m *model) sourcesCmd() tea.Cmd {
+	m.srcGen++
+	m.srcPending++
+	m.srcIssued = nowFn()
+	gen := m.srcGen
+	items := slices.Clone(m.c.Items)
+	var key *previewKey
 	if m.f != nil {
-		m.f.refreshPreview()
+		k := m.f.key()
+		key = &k
+	}
+	return func() tea.Msg {
+		msg := sourcesMsg{gen: gen, results: readSources(items)}
+		if key != nil {
+			r := readSource(key.typ, key.cfg)
+			msg.preview, msg.from = &r, *key
+		}
+		return msg
 	}
 }
 
@@ -130,8 +176,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		m.tick(time.Time(msg))
-		return m, tickCmd()
+		cmd := m.tick(time.Time(msg))
+		return m, tea.Batch(tickCmd(), cmd)
+
+	case sourcesMsg:
+		m.srcPending = max(0, m.srcPending-1)
+		if msg.gen != m.srcGen {
+			return m, nil
+		}
+		m.src = msg.results
+		if m.f != nil && msg.preview != nil && m.f.key() == msg.from {
+			m.f.preview = *msg.preview
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -158,9 +215,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// advances the clock by real elapsed time. the clock runs under every screen,
-// so editing config mid-item doesn't stall the timer.
-func (m *model) tick(now time.Time) {
+// advances the clock by real elapsed time, under every screen
+func (m *model) tick(now time.Time) tea.Cmd {
 	delta := max(0, now.Sub(m.lastTick))
 	m.lastTick = now
 	m.blink = !m.blink
@@ -191,9 +247,13 @@ func (m *model) tick(now time.Time) {
 
 	if now.Sub(m.lastPoll) >= pollEvery {
 		m.lastPoll = now
-		m.refreshSources()
 		m.checkRollover(now)
+		stale := now.Sub(m.srcIssued) > srcStaleAfter && m.srcPending < maxSrcPending
+		if m.srcPending == 0 || stale {
+			return m.sourcesCmd()
+		}
 	}
+	return nil
 }
 
 // a new logical day arriving mid-session ends the old one, but never under a
@@ -237,7 +297,8 @@ func (m model) updateFirstRun(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m.quit()
 	case "c", "C":
-		m.openConfig()
+		cmd := m.openConfig()
+		return m, cmd
 	}
 	return m, nil
 }

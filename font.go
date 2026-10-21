@@ -12,8 +12,7 @@ type bigFont struct {
 	glyphs map[rune][]string
 }
 
-// solid slab, 5 rows. verticals are 2 cols wide so they read the same weight as
-// the 1-row horizontals, since terminal cells are roughly 2:1 tall.
+// solid slab, 5 rows
 var fontSlab = bigFont{rows: 5, glyphs: map[rune][]string{
 	'0': {"██████", "██  ██", "██  ██", "██  ██", "██████"},
 	'1': {"  ████", "    ██", "    ██", "    ██", "    ██"},

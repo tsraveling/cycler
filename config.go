@@ -49,11 +49,15 @@ func loadConfig() *config {
 	if json.Unmarshal(data, c) != nil {
 		return &config{}
 	}
+	seen := map[string]bool{}
+	repaired := false
 	valid := c.Items[:0]
 	for _, it := range c.Items {
-		if it.ID == "" {
+		if it.ID == "" || seen[it.ID] {
 			it.ID = newID()
+			repaired = true
 		}
+		seen[it.ID] = true
 		if it.Seconds < 1 {
 			it.Seconds = 1
 		}
@@ -63,6 +67,9 @@ func loadConfig() *config {
 		valid = append(valid, it)
 	}
 	c.Items = valid
+	if repaired {
+		c.save()
+	}
 	return c
 }
 
@@ -92,12 +99,33 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-// best-effort; persistence failures never interrupt the session
+// best-effort atomic write: temp file, then rename over the target. a
+// symlinked target is written through to the file it points at.
 func writeJSON(path string, v any) {
-	os.MkdirAll(filepath.Dir(path), 0o755)
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return
 	}
-	os.WriteFile(path, data, 0o644)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	dir := filepath.Dir(path)
+	if os.MkdirAll(dir, 0o755) != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.Write(data)
+	serr := tmp.Sync()
+	cerr := tmp.Close()
+	os.Chmod(tmp.Name(), mode)
+	if werr != nil || serr != nil || cerr != nil || os.Rename(tmp.Name(), path) != nil {
+		os.Remove(tmp.Name())
+	}
 }

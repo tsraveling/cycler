@@ -13,9 +13,8 @@ import (
 // indirection so tests stay silent
 var notifyFn = notifyDone
 
-// rings the terminal bell and fires an OS notification. both are best-effort
-// and fired in the background so a slow or missing binary can never stall the
-// tick; all errors are ignored on purpose.
+// rings the terminal bell and fires a best-effort OS notification in the
+// background
 func notifyDone(label string) {
 	fmt.Fprint(os.Stderr, "\a")
 
