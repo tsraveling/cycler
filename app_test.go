@@ -1,0 +1,373 @@
+package main
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+var testNow = time.Date(2026, 10, 21, 14, 0, 0, 0, time.Local)
+
+// isolates config and pins the clock; the returned func moves the clock
+func setup(t *testing.T) func(time.Time) {
+	dir := t.TempDir()
+	configDirFn = func() string { return dir }
+	now := testNow
+	nowFn = func() time.Time { return now }
+	notifyFn = func(string) {}
+	t.Cleanup(func() { nowFn = time.Now; notifyFn = notifyDone })
+	return func(n time.Time) { now = n }
+}
+
+func key(s string) tea.KeyMsg {
+	switch s {
+	case " ":
+		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+}
+
+func send(m model, keys ...string) model {
+	for _, k := range keys {
+		next, _ := m.Update(key(k))
+		m = next.(model)
+	}
+	return m
+}
+
+func typeText(m model, s string) model {
+	for _, r := range s {
+		m = send(m, string(r))
+	}
+	return m
+}
+
+// runs the clock forward in one-second ticks, below the sleep threshold
+func runClock(m model, secs int) model {
+	t := m.lastTick
+	for i := 0; i < secs; i++ {
+		t = t.Add(time.Second)
+		next, _ := m.Update(tickMsg(t))
+		m = next.(model)
+	}
+	return m
+}
+
+func withItems(t *testing.T, names ...string) model {
+	c := &config{}
+	for _, n := range names {
+		c.Items = append(c.Items, item{ID: newID(), Name: n, Seconds: 60, Source: srcStatic, SourceConfig: n + " text"})
+	}
+	c.save()
+	return newModel()
+}
+
+func TestFirstRunToCycler(t *testing.T) {
+	setup(t)
+	m := newModel()
+	if m.scr != scrFirstRun {
+		t.Fatalf("want first run, got %d", m.scr)
+	}
+	m = send(m, "C")
+	if m.scr != scrConfig {
+		t.Fatalf("want config")
+	}
+	m = send(m, "esc")
+	if m.scr != scrFirstRun {
+		t.Fatalf("empty config esc should return to first run")
+	}
+
+	m = send(m, "c", "a")
+	m = typeText(m, "PHB")
+	m = send(m, "tab")
+	m = typeText(m, "1")
+	m = send(m, "tab")
+	m = typeText(m, "30")
+	m = send(m, "tab", "right", "right", "right", "tab")
+	m = typeText(m, "hello")
+	m = send(m, "tab", "enter")
+	if m.scr != scrConfig || len(m.c.Items) != 1 {
+		t.Fatalf("save failed: scr %d items %d", m.scr, len(m.c.Items))
+	}
+	it := m.c.Items[0]
+	if it.Name != "PHB" || it.Seconds != 90 || it.Source != srcStatic || it.SourceConfig != "hello" {
+		t.Fatalf("bad item %+v", it)
+	}
+	if m.s.Current != it.ID || m.s.Remaining != 90 {
+		t.Fatalf("first item should become current: %+v", m.s)
+	}
+	m = send(m, "esc")
+	if m.scr != scrCycler {
+		t.Fatalf("want cycler")
+	}
+
+	// persisted
+	m2 := newModel()
+	if len(m2.c.Items) != 1 || m2.scr != scrCycler {
+		t.Fatalf("not persisted")
+	}
+}
+
+func TestTimerRunsAndAdvances(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A", "B")
+	m = send(m, " ")
+	if m.s.Timer != timerGoing {
+		t.Fatal("space should start")
+	}
+	m = runClock(m, 30)
+	if m.s.Remaining != 30 {
+		t.Fatalf("remaining %d", m.s.Remaining)
+	}
+	m = send(m, " ")
+	m = runClock(m, 10)
+	if m.s.Timer != timerPaused || m.s.Remaining != 30 {
+		t.Fatalf("pause should freeze: %+v", m.s)
+	}
+	m = send(m, " ")
+	m = runClock(m, 40)
+	if m.s.Timer != timerDone {
+		t.Fatalf("want done, got %s", m.s.Timer)
+	}
+	if !strings.Contains(m.View(), "Next: B: B text") {
+		t.Fatal("done view should show next item")
+	}
+	m = send(m, " ")
+	if m.s.Current != m.c.Items[1].ID || m.s.Timer != timerIdle || len(m.s.Log) != 1 {
+		t.Fatalf("advance failed: %+v", m.s)
+	}
+	if !m.s.doneThisCycle(m.c.Items[0].ID) {
+		t.Fatal("A should be checked this cycle")
+	}
+
+	// enter on done advances without a prompt, wrapping the cycle
+	m = send(m, " ")
+	m = runClock(m, 61)
+	m = send(m, "enter")
+	if m.prompt != nil || m.s.Current != m.c.Items[0].ID || len(m.s.CycleDone) != 0 {
+		t.Fatalf("wrap failed: %+v", m.s)
+	}
+	if !m.s.Log[1].Last || m.s.Log[0].Last {
+		t.Fatal("last-of-cycle flags wrong")
+	}
+}
+
+func TestSleepPauses(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A")
+	m = send(m, " ")
+	m = runClock(m, 5)
+	next, _ := m.Update(tickMsg(m.lastTick.Add(10 * time.Minute)))
+	m = next.(model)
+	if m.s.Timer != timerPaused || m.s.Remaining != 55 {
+		t.Fatalf("sleep should pause without burning time: %+v", m.s)
+	}
+}
+
+func TestPrompts(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A", "B", "C")
+
+	m = send(m, "enter", "n")
+	if len(m.s.Log) != 0 || m.prompt != nil {
+		t.Fatal("n should cancel")
+	}
+	m = send(m, "enter", "y")
+	if len(m.s.Log) != 1 || m.s.Log[0].Skipped {
+		t.Fatal("complete early failed")
+	}
+	m = send(m, "s", "y")
+	if len(m.s.Log) != 2 || !m.s.Log[1].Skipped {
+		t.Fatal("skip failed")
+	}
+	if !strings.Contains(m.renderCounter(60), "◦") {
+		t.Fatal("skip should be hollow in counter")
+	}
+
+	m = send(m, "F", "y")
+	if m.scr != scrFinish {
+		t.Fatal("want finish")
+	}
+	v := m.View()
+	if !strings.Contains(v, "Wednesday, October 21") || !strings.Contains(v, "Finished 1 item (1 skipped)") {
+		t.Fatalf("finish view wrong:\n%s", v)
+	}
+	m = send(m, "x")
+	if m.scr != scrCycler || len(m.s.Log) != 0 || m.s.Current != m.c.Items[0].ID {
+		t.Fatal("finish should reset")
+	}
+}
+
+func TestPreviousDayFinish(t *testing.T) {
+	setClock := setup(t)
+	m := withItems(t, "A", "B")
+	m = send(m, "enter", "y")
+	m.s.save()
+
+	setClock(testNow.Add(24 * time.Hour))
+	m = newModel()
+	if m.scr != scrFinish || !strings.Contains(m.View(), "Wednesday, October 21") {
+		t.Fatal("previous day should show finish")
+	}
+	m = send(m, "q")
+	if m.scr != scrCycler || len(m.s.Log) != 0 || m.s.Date != "2026-10-22" {
+		t.Fatalf("should reset into today: %+v", m.s)
+	}
+
+	// nothing done yesterday: silent reset
+	setClock(testNow.Add(48 * time.Hour))
+	m = newModel()
+	if m.scr != scrCycler {
+		t.Fatal("empty previous day should not show finish")
+	}
+}
+
+func TestRolloverHourKeepsDay(t *testing.T) {
+	setClock := setup(t)
+	m := withItems(t, "A")
+	m = send(m, "enter", "y")
+
+	setClock(time.Date(2026, 10, 22, 1, 30, 0, 0, time.Local))
+	m = newModel()
+	if m.scr != scrCycler || len(m.s.Log) != 1 {
+		t.Fatal("1:30am should still be the previous logical day")
+	}
+	if !strings.Contains(m.dateLabel(), "☾ Thu, Oct 22") {
+		t.Fatalf("want moon date, got %q", m.dateLabel())
+	}
+}
+
+func TestFormGating(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A")
+	m = send(m, "c", "e", "tab")
+	m = send(m, "backspace")
+	m = typeText(m, "999")
+	if v := m.f.mins.Value(); v != "99" {
+		t.Fatalf("minutes gate: %q", v)
+	}
+	m = send(m, "tab", "backspace", "backspace")
+	m = typeText(m, "7x5")
+	if v := m.f.secs.Value(); v != "7" {
+		t.Fatalf("seconds gate: %q", v)
+	}
+
+	m = send(m, "esc")
+	if m.prompt == nil || m.prompt.kind != confirmDiscard || !m.f.cancelSel {
+		t.Fatal("dirty esc should prompt discard")
+	}
+	m = send(m, "n")
+	if m.scr != scrForm {
+		t.Fatal("n should stay in form")
+	}
+	m = send(m, "enter", "y")
+	if m.scr != scrConfig || m.c.Items[0].Seconds != 60 {
+		t.Fatal("discard should leave item unchanged")
+	}
+
+	m = send(m, "e", "esc")
+	if m.scr != scrConfig {
+		t.Fatal("clean esc should exit immediately")
+	}
+
+	m = send(m, "e")
+	for range 5 {
+		m = send(m, "backspace")
+	}
+	m = send(m, "tab", "tab", "tab", "tab", "tab", "enter")
+	if m.f == nil || m.f.err != "Name is required" {
+		t.Fatal("empty name should be refused")
+	}
+}
+
+func TestConfigEdits(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A", "B", "C")
+	a, b, c := m.c.Items[0].ID, m.c.Items[1].ID, m.c.Items[2].ID
+
+	// timer keeps running inside config
+	m = send(m, " ", "c")
+	m = runClock(m, 10)
+	if m.s.Remaining != 50 {
+		t.Fatalf("clock should run under config: %d", m.s.Remaining)
+	}
+
+	m = send(m, "J")
+	if m.c.Items[1].ID != a || m.sel != 1 {
+		t.Fatal("J should move item down")
+	}
+	m = send(m, "esc")
+	if m.s.Current != a || m.s.Remaining != 50 {
+		t.Fatal("reorder should keep current by id")
+	}
+
+	// editing the started current item keeps remaining under a new denominator
+	m = send(m, "c", "e", "tab", "backspace")
+	m = typeText(m, "2")
+	m = send(m, "tab", "tab", "tab", "tab", "enter")
+	if m.c.byID(a).Seconds != 120 || m.s.Remaining != 50 {
+		t.Fatalf("duration edit: %+v", m.s)
+	}
+
+	m = send(m, "d", "y")
+	if len(m.c.Items) != 2 || m.s.Current != c || m.s.Timer != timerIdle {
+		t.Fatalf("deleting current should hand off to next: %+v", m.s)
+	}
+	_ = b
+}
+
+func TestLayoutFits(t *testing.T) {
+	setup(t)
+	sizes := [][2]int{{34, 12}, {50, 16}, {80, 24}, {140, 45}}
+	m := withItems(t, "Photobucket", "Joojeh", "Secondary tasks with a long name")
+	m.c.Items[0].SourceConfig = strings.Repeat("a very long source value ", 20)
+	m.refreshSources()
+
+	screens := map[string]model{}
+	screens["cycler"] = m
+	screens["paused"] = send(m, " ", " ")
+	screens["prompt"] = send(m, "F")
+	screens["config"] = send(m, "c")
+	screens["delete"] = send(m, "c", "d")
+	screens["form"] = send(m, "c", "e")
+	screens["finish"] = send(m, "enter", "y", "F", "y")
+	fr := m
+	fr.scr = scrFirstRun
+	screens["firstrun"] = fr
+
+	for name, s := range screens {
+		for _, sz := range sizes {
+			s.w, s.h = sz[0], sz[1]
+			if s.f != nil {
+				s.f.resize(s.w)
+			}
+			v := s.View()
+			lines := strings.Split(v, "\n")
+			if len(lines) != sz[1] {
+				t.Errorf("%s %v: %d lines", name, sz, len(lines))
+			}
+			for i, l := range lines {
+				if lipgloss.Width(l) > sz[0] {
+					t.Errorf("%s %v: line %d is %d wide", name, sz, i, lipgloss.Width(l))
+				}
+			}
+		}
+	}
+}
