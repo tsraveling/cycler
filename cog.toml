@@ -1,0 +1,20 @@
+from_latest_tag = true
+tag_prefix = "v"
+branch_whitelist = ["main"]
+
+pre_bump_hooks = [
+  "sed -i.bak 's|const Version = .*|const Version = \"{{version}}\"|' version.go && rm -f version.go.bak",
+  "go build ./...",
+  "git add version.go",
+]
+post_bump_hooks = []
+
+[commit_types]
+step = { changelog_title = "Steps", bump_patch = true }
+tweak = { changelog_title = "Tweaks", bump_patch = true }
+piton = { changelog_title = "", omit_from_changelog = true }
+draft = { changelog_title = "", omit_from_changelog = true }
+
+[changelog]
+path = "CHANGELOG.md"
+template = "default"
