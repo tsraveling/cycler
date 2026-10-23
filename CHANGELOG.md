@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.1.0 - 2026-10-23
+#### Steps
+- adds weekdays and limited run items - (5b3099f) - Tim Raveling
+#### Features
+- item counts and weekday variations (#1) - (1c2983f) - Tim Raveling
+#### Bug Fixes
+- code review fixes - (67b94f4) - Tim Raveling
+
+- - -
+
 ## v0.0.1 - 2026-10-21
 #### Steps
 - initial commit - (533050c) - Tim Raveling
