@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.1.1 - 2026-10-23
+#### Bug Fixes
+- c now shows complete prompt, while C opens config - (f31e17f) - Tim Raveling
+
+- - -
+
 ## v0.1.0 - 2026-10-23
 #### Steps
 - adds weekdays and limited run items - (5b3099f) - Tim Raveling
