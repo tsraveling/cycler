@@ -9,6 +9,7 @@ type confirmKind int
 const (
 	confirmComplete confirmKind = iota + 1
 	confirmSkip
+	confirmPass
 	confirmFinish
 	confirmDelete
 	confirmDiscard

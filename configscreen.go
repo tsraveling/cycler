@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -148,10 +150,14 @@ func (m model) listRows(w, rows int) []string {
 
 	out := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
-		name := truncWidth(m.c.Items[i].Name, w-3)
-		if i == m.sel {
+		it := m.c.Items[i]
+		name := truncWidth(it.Name, w-3)
+		switch {
+		case i == m.sel:
 			out = append(out, orangeStyle.Bold(true).Render("▶ "+name))
-		} else {
+		case !m.s.eligible(it):
+			out = append(out, grayStyle.Render("  "+name))
+		default:
 			out = append(out, textStyle.Render("  "+name))
 		}
 	}
@@ -169,9 +175,21 @@ func (m model) detailRows(w, rows int) []string {
 		return grayStyle.Render(label+spaces(labelW-len(label))) + style.Render(truncWidth(val, vw))
 	}
 
+	limit, limitStyle := it.limitLabel(), grayStyle
+	if it.TimesPerDay > 0 {
+		limit = fmt.Sprintf("%s (%d used)", limit, m.s.countToday(it.ID))
+		limitStyle = textStyle
+	}
+	daysStyle := textStyle
+	if len(it.ActiveDays) == 0 {
+		daysStyle = grayStyle
+	}
+
 	out := []string{
 		row("Name", it.Name, boldStyle),
 		row("Timer", fmtTime(it.Seconds), textStyle),
+		row("Per day", limit, limitStyle),
+		row("Active", it.daysLabel(), daysStyle),
 		row("Source", it.Source.label(), textStyle),
 	}
 	r := m.src[it.ID]

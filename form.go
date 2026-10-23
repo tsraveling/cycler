@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // @region form:model -- ADD/EDIT ITEM FORM
@@ -18,25 +19,38 @@ const (
 	fName field = iota
 	fMin
 	fSec
+	fTimes
+	fDays
 	fType
 	fSrc
 	fButtons
 	fieldCount
 )
 
+// cursor positions in the active-on control: two presets, then Mo..Su
+const (
+	cellEveryDay = iota
+	cellWeekdays
+	cellFirstDay
+)
+
+const dayCellCount = cellFirstDay + 7
+
 const formMaxW = 60
 
 type formValues struct {
-	name, mins, secs, src string
-	typ                   int
+	name, mins, secs, times, days, src string
+	typ                                int
 }
 
 type form struct {
 	// empty when adding
 	editID string
 
-	name, mins, secs, src textinput.Model
-	typ                   int
+	name, mins, secs, times, src textinput.Model
+	typ                          int
+	days                         []int
+	dayCur                       int
 
 	focus     field
 	cancelSel bool
@@ -55,10 +69,12 @@ func newInput(limit int) textinput.Model {
 
 func newForm(it *item, w int) *form {
 	f := &form{
-		name: newInput(maxNameLen),
-		mins: newInput(3),
-		secs: newInput(2),
-		src:  newInput(0),
+		name:  newInput(maxNameLen),
+		mins:  newInput(3),
+		secs:  newInput(2),
+		times: newInput(2),
+		src:   newInput(0),
+		days:  allDays(),
 	}
 	f.name.Placeholder = "Name"
 	f.mins.Placeholder = "0"
@@ -69,6 +85,10 @@ func newForm(it *item, w int) *form {
 		f.name.SetValue(it.Name)
 		f.mins.SetValue(strconv.Itoa(it.Seconds / 60))
 		f.secs.SetValue(fmt.Sprintf("%02d", it.Seconds%60))
+		if it.TimesPerDay > 0 {
+			f.times.SetValue(strconv.Itoa(it.TimesPerDay))
+		}
+		f.days = normalizeDays(it.ActiveDays)
 		f.src.SetValue(it.SourceConfig)
 		f.typ = max(0, slices.Index(sourceTypes, it.Source))
 	}
@@ -78,7 +98,29 @@ func newForm(it *item, w int) *form {
 }
 
 func (f *form) values() formValues {
-	return formValues{f.name.Value(), f.mins.Value(), f.secs.Value(), f.src.Value(), f.typ}
+	return formValues{
+		f.name.Value(), f.mins.Value(), f.secs.Value(),
+		timesKey(f.times.Value()), daysKey(f.days), f.src.Value(), f.typ,
+	}
+}
+
+// every spelling of no limit compares equal, so typing a bare 0 into an
+// unlimited item is not an edit
+func timesKey(v string) string {
+	n, err := strconv.Atoi(v)
+	if err != nil || n == 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
+}
+
+// the day set as a comparable value, so dirty tracking stays a struct compare
+func daysKey(days []int) string {
+	parts := make([]string, len(days))
+	for i, d := range days {
+		parts[i] = strconv.Itoa(d)
+	}
+	return strings.Join(parts, ",")
 }
 
 func (f *form) dirty() bool { return f.values() != f.orig }
@@ -97,10 +139,16 @@ func (f *form) resize(termW int) {
 }
 
 func (f *form) inputs() map[field]*textinput.Model {
-	return map[field]*textinput.Model{fName: &f.name, fMin: &f.mins, fSec: &f.secs, fSrc: &f.src}
+	return map[field]*textinput.Model{
+		fName: &f.name, fMin: &f.mins, fSec: &f.secs, fTimes: &f.times, fSrc: &f.src,
+	}
 }
 
 func (f *form) setFocus(to field) tea.Cmd {
+	// a limit of zero is no limit, which reads as an empty field
+	if n, err := strconv.Atoi(f.times.Value()); err == nil && n == 0 {
+		f.times.SetValue("")
+	}
 	f.focus = to
 	var cmd tea.Cmd
 	for k, in := range f.inputs() {
@@ -212,6 +260,19 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case fDays:
+		switch key {
+		case "left", "h":
+			f.dayCur = max(0, f.dayCur-1)
+		case "right", "l":
+			f.dayCur = min(dayCellCount-1, f.dayCur+1)
+		case " ":
+			f.toggleDay()
+		case "?":
+			m.toggleHelp()
+		}
+		return m, nil
+
 	case fButtons:
 		switch key {
 		case "left", "h", "right", "l":
@@ -221,7 +282,11 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case fMin, fSec:
+	case fMin, fSec, fTimes:
+		if key == "?" {
+			m.toggleHelp()
+			return m, nil
+		}
 		return m, f.updateNumber(msg)
 	}
 
@@ -232,6 +297,24 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		f.refreshPreview()
 	}
 	return m, cmd
+}
+
+// the presets only ever set days, so the control can never be emptied by
+// accident; clearing every day is deliberate, one day at a time
+func (f *form) toggleDay() {
+	switch f.dayCur {
+	case cellEveryDay:
+		f.days = allDays()
+	case cellWeekdays:
+		f.days = weekdayDays()
+	default:
+		d := int(weekOrder[f.dayCur-cellFirstDay])
+		if slices.Contains(f.days, d) {
+			f.days = slices.DeleteFunc(slices.Clone(f.days), func(x int) bool { return x == d })
+		} else {
+			f.days = normalizeDays(append(slices.Clone(f.days), d))
+		}
+	}
 }
 
 // digits only, and the value must stay a valid time part
@@ -249,8 +332,11 @@ func (f *form) updateNumber(msg tea.KeyMsg) tea.Cmd {
 	*in, cmd = in.Update(msg)
 
 	limit := 59
-	if f.focus == fMin {
+	switch f.focus {
+	case fMin:
 		limit = maxMinutes
+	case fTimes:
+		limit = maxTimesPerDay
 	}
 	if v := in.Value(); v != "" {
 		if n, err := strconv.Atoi(v); err != nil || n > limit {
@@ -281,14 +367,16 @@ func (m *model) saveForm() tea.Cmd {
 		return nil
 	}
 
+	times, _ := strconv.Atoi(f.times.Value())
 	it := item{
 		ID:           f.editID,
 		Name:         name,
 		Seconds:      secs,
+		TimesPerDay:  max(0, times),
+		ActiveDays:   normalizeDays(f.days),
 		Source:       sourceTypes[f.typ],
 		SourceConfig: strings.TrimSpace(f.src.Value()),
 	}
-	wasEmpty := len(m.c.Items) == 0
 	if it.ID == "" {
 		it.ID = newID()
 		m.c.Items = append(m.c.Items, it)
@@ -307,8 +395,14 @@ func (m *model) saveForm() tea.Cmd {
 			m.s.Remaining = min(m.s.Remaining, secs)
 		}
 	}
-	if wasEmpty {
-		m.s.setCurrent(m.c, 0)
+	// an edit can schedule the running item out of today, and an added one can
+	// fill a day that had nothing left to run
+	if it.ID == m.s.Current && !m.s.eligible(it) {
+		m.s.handOff(m.c)
+		m.carry = 0
+	}
+	if m.s.Current == "" {
+		m.s.setCurrent(m.c, m.s.firstEligible(m.c))
 	}
 
 	m.c.save()
@@ -352,36 +446,55 @@ func (m model) formView() string {
 		typStyle = orangeStyle.Bold(true)
 	}
 
-	lines := []string{
-		label(fName, "Name"),
-		f.name.View(),
-		"",
-		label(fMin, "Timer"),
-		numView(&f.mins) + grayStyle.Render(":") + numView(&f.secs),
-		"",
-		label(fType, "Source type"),
-		typStyle.Render(typ),
-		"",
-		label(fSrc, sourceTypes[f.typ].hint()),
-		f.src.View(),
-	}
-	for _, l := range wrapCapped(f.preview.text, fw, 2) {
-		lines = append(lines, f.preview.style().Render(l))
-	}
-	lines = append(lines, "", f.buttons())
-	if f.err != "" {
-		lines = append(lines, redStyle.Render(truncWidth(f.err, fw)))
+	build := func(withDaysValue, compact bool) []string {
+		// a short panel puts a label and its value on one row, where they fit
+		field := func(fl field, name, value string) []string {
+			if one := label(fl, name) + "  " + value; compact && lipgloss.Width(one) <= fw {
+				return []string{one}
+			}
+			return []string{label(fl, name), value}
+		}
+		lines := []string{label(fName, "Name"), f.name.View(), ""}
+		lines = append(lines, field(fMin, "Timer", numView(&f.mins)+grayStyle.Render(":")+numView(&f.secs))...)
+		lines = append(lines, "")
+		lines = append(lines, field(fTimes, "Times per day", timesView(&f.times))...)
+		lines = append(lines, "")
+		rows := f.dayRows(fw)
+		lines = append(lines, field(fDays, "Active on", rows[0])...)
+		lines = append(lines, rows[1:]...)
+		if withDaysValue {
+			lines = append(lines, f.daysValue(fw))
+		}
+		lines = append(lines,
+			"",
+			label(fType, "Source type"),
+			typStyle.Render(typ),
+			"",
+			label(fSrc, sourceTypes[f.typ].hint()),
+			f.src.View(),
+		)
+		for _, l := range wrapCapped(f.preview.text, fw, 2) {
+			lines = append(lines, f.preview.style().Render(l))
+		}
+		lines = append(lines, "", f.buttons())
+		if f.err != "" {
+			lines = append(lines, redStyle.Render(truncWidth(f.err, fw)))
+		}
+		return lines
 	}
 
-	// spacer rows go first when the panel is short
-	if room := blockRows(len(head), len(help), ch); len(lines) > room {
-		packed := lines[:0:0]
-		for _, l := range lines {
-			if l != "" {
-				packed = append(packed, l)
-			}
-		}
-		lines = packed
+	// a short panel sheds the spacer rows first, then the day summary, which
+	// only restates the row of toggles above it, then the row per label
+	room := blockRows(len(head), len(help), ch)
+	lines := build(true, false)
+	if len(lines) > room {
+		lines = dropBlanks(lines)
+	}
+	if len(lines) > room {
+		lines = dropBlanks(build(false, false))
+	}
+	if len(lines) > room {
+		lines = dropBlanks(build(false, true))
 	}
 
 	block := padBlock(lines, fw, cw)
@@ -401,6 +514,60 @@ func (f *form) buttons() string {
 		}
 	}
 	return saveStyle.Render("[ save ]") + "   " + cancelStyle.Render("[ cancel ]")
+}
+
+func dropBlanks(lines []string) []string {
+	packed := lines[:0:0]
+	for _, l := range lines {
+		if l != "" {
+			packed = append(packed, l)
+		}
+	}
+	return packed
+}
+
+// the preset cells and the seven day cells, on one row when it fits
+func (f *form) dayRows(fw int) []string {
+	cell := func(i int, text string, on bool) string {
+		switch {
+		case f.focus == fDays && f.dayCur == i:
+			return orangeStyle.Bold(true).Render(text)
+		case on:
+			return textStyle.Render(text)
+		}
+		return grayStyle.Render(text)
+	}
+	presets := cell(cellEveryDay, "Every day", slices.Equal(f.days, allDays())) +
+		"  " + cell(cellWeekdays, "Weekdays", slices.Equal(f.days, weekdayDays()))
+	cells := make([]string, len(weekOrder))
+	for i, d := range weekOrder {
+		cells[i] = cell(cellFirstDay+i, dayAbbrev[d], slices.Contains(f.days, int(d)))
+	}
+	days := strings.Join(cells, " ")
+	if one := presets + "  " + days; lipgloss.Width(one) <= fw {
+		return []string{one}
+	}
+	return []string{presets, days}
+}
+
+// the day set as it will read back on the config screen
+func (f *form) daysValue(fw int) string {
+	style := textStyle
+	if len(f.days) == 0 {
+		style = grayStyle
+	}
+	return style.Render(truncWidth(item{ActiveDays: f.days}.daysLabel(), fw))
+}
+
+// an empty limit reads as "no limit" once the field is left
+func timesView(in *textinput.Model) string {
+	if in.Focused() {
+		return in.View()
+	}
+	if in.Value() == "" {
+		return grayStyle.Render("no limit")
+	}
+	return textStyle.Render(in.Value())
 }
 
 // a blurred input still reserves a cursor cell, which would gap the colon
