@@ -18,8 +18,10 @@ var (
 		"esc back", "? help",
 	}
 	configEmptyHelp = []string{"a to add first item"}
+	emptyDayHelp    = []string{"c configure", "F finish day", "q quit"}
 	formHelp        = []string{
-		"tab/enter next", "shift+tab back", "h/l toggle", "esc cancel", "? help",
+		"tab/enter next", "shift+tab back", "h/l toggle", "space set", "esc cancel",
+		"? help",
 	}
 )
 

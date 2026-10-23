@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,7 +15,12 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCyclerPrompt(msg)
 	}
 
-	switch msg.String() {
+	key := msg.String()
+	if m.s.Current == "" {
+		return m.updateEmptyDay(key)
+	}
+
+	switch key {
 	case "q":
 		return m.quit()
 
@@ -49,6 +55,11 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.prompt = newConfirm(confirmSkip, "Skip item?")
 
+	case "p":
+		if m.canPass() {
+			m.prompt = newConfirm(confirmPass, "Pass for this cycle?")
+		}
+
 	case "F":
 		m.prompt = newConfirm(confirmFinish, "Finish day?")
 	}
@@ -69,6 +80,9 @@ func (m model) handleCyclerPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case confirmSkip:
 		cmd := m.advance(true)
 		return m, cmd
+	case confirmPass:
+		cmd := m.passCurrent()
+		return m, cmd
 	case confirmFinish:
 		m.fin = finishFor(m.s)
 		m.s = freshState(logicalDate(nowFn()), m.c)
@@ -79,8 +93,37 @@ func (m model) handleCyclerPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// nothing is left to run today, so only the day-level keys are live
+func (m model) updateEmptyDay(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "q":
+		return m.quit()
+	case "?":
+		m.toggleHelp()
+	case "c", "C":
+		cmd := m.openConfig()
+		return m, cmd
+	case "F":
+		m.prompt = newConfirm(confirmFinish, "Finish day?")
+	}
+	return m, nil
+}
+
+// passing only makes sense for an item that is rationed
+func (m model) canPass() bool {
+	it := m.c.byID(m.s.Current)
+	return it != nil && it.TimesPerDay > 0
+}
+
 func (m *model) advance(skipped bool) tea.Cmd {
 	m.s.advance(m.c, skipped)
+	m.carry = 0
+	m.s.save()
+	return m.sourcesCmd()
+}
+
+func (m *model) passCurrent() tea.Cmd {
+	m.s.pass(m.c)
 	m.carry = 0
 	m.s.save()
 	return m.sourcesCmd()
@@ -106,9 +149,12 @@ func (m model) activeStyle() lipgloss.Style {
 
 func (m model) cyclerView() string {
 	w, h := m.w, m.h
+	if m.s.Current == "" {
+		return m.emptyDayView()
+	}
 	cw, ch := contentWidth(w), contentHeight(h)
 
-	help := toggledHelp(cyclerHelp, m.c.HelpFull, cw)
+	help := toggledHelp(m.cyclerKeys(), m.c.HelpFull, cw)
 
 	date := m.dateLabel()
 	crumbW := max(1, cw-lipgloss.Width(date)-2)
@@ -130,6 +176,27 @@ func (m model) cyclerView() string {
 	return renderPanel(stackContent(head, block, help, ch), w, h, gray)
 }
 
+// `p pass` only belongs in the keymap when the current item is rationed
+func (m model) cyclerKeys() []string {
+	if !m.canPass() {
+		return cyclerHelp
+	}
+	return slices.Insert(slices.Clone(cyclerHelp), 3, "p pass")
+}
+
+func (m model) emptyDayView() string {
+	cw := contentWidth(m.w)
+	help := fixedHelp(emptyDayHelp, cw)
+	if m.prompt != nil {
+		help = []string{promptStyle.Render(m.prompt.prompt + " y/n")}
+	}
+	var body []string
+	for _, l := range wrapText("The cycler is empty. Enjoy your day off!", cw) {
+		body = append(body, center(greenStyle.Render(l), cw))
+	}
+	return centeredPanel(body, help, m.w, m.h, gray)
+}
+
 func (m model) timerLines(cw int) []string {
 	it := m.c.byID(m.s.Current)
 	if it == nil {
@@ -148,9 +215,12 @@ func (m model) sourceLine() (string, lipgloss.Style) {
 		return m.prompt.prompt + " y/n", promptStyle
 	}
 	if m.s.Timer == timerDone {
-		next := m.c.Items[m.s.upcoming(m.c)]
-		r := m.src[next.ID]
-		return "Next: " + next.Name + ": " + r.text, r.style()
+		if up := m.s.upcoming(m.c); up >= 0 {
+			next := m.c.Items[up]
+			r := m.src[next.ID]
+			return "Next: " + next.Name + ": " + r.text, r.style()
+		}
+		return "Last one today", grayStyle
 	}
 	r := m.src[m.s.Current]
 	return r.text, r.style()
@@ -181,20 +251,30 @@ type crumb struct {
 	style lipgloss.Style
 }
 
+// only the items this cycle is made of: what can still run today, plus what
+// has already been settled in the cycle so the trail doesn't shed items as
+// they hit their daily limit
 func (m model) crumbs() ([]crumb, int) {
-	cur := m.c.indexOf(m.s.Current)
-	cs := make([]crumb, len(m.c.Items))
-	for i, it := range m.c.Items {
+	cs := make([]crumb, 0, len(m.c.Items))
+	cur := 0
+	for _, it := range m.c.Items {
+		done, passed := m.s.doneThisCycle(it.ID), m.s.passedThisCycle(it.ID)
+		if it.ID != m.s.Current && !done && !passed && !m.s.eligible(it) {
+			continue
+		}
 		switch {
-		case i == cur:
-			cs[i] = crumb{"▶ " + it.Name, m.activeStyle().Bold(true)}
-		case m.s.doneThisCycle(it.ID):
-			cs[i] = crumb{"✓ " + it.Name, grayStyle}
+		case it.ID == m.s.Current:
+			cur = len(cs)
+			cs = append(cs, crumb{"▶ " + it.Name, m.activeStyle().Bold(true)})
+		case done:
+			cs = append(cs, crumb{"✓ " + it.Name, grayStyle})
+		case passed:
+			cs = append(cs, crumb{"~ " + it.Name, grayStyle})
 		default:
-			cs[i] = crumb{"○ " + it.Name, lightGrayStyle}
+			cs = append(cs, crumb{"○ " + it.Name, lightGrayStyle})
 		}
 	}
-	return cs, max(0, cur)
+	return cs, cur
 }
 
 func crumbWidth(c crumb) int { return lipgloss.Width(c.text) + crumbSlack }

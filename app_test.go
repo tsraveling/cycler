@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func TestFirstRunToCycler(t *testing.T) {
 	m = typeText(m, "1")
 	m = send(m, "tab")
 	m = typeText(m, "30")
-	m = send(m, "tab", "right", "right", "right", "tab")
+	m = send(m, "tab", "tab", "tab", "right", "right", "right", "tab")
 	m = typeText(m, "hello")
 	m = send(m, "tab", "enter")
 	if m.scr != scrConfig || len(m.c.Items) != 1 {
@@ -292,7 +293,7 @@ func TestFormGating(t *testing.T) {
 	for range 5 {
 		m = send(m, "backspace")
 	}
-	m = send(m, "tab", "tab", "tab", "tab", "tab", "enter")
+	m = send(m, "tab", "tab", "tab", "tab", "tab", "tab", "tab", "enter")
 	if m.f == nil || m.f.err != "Name is required" {
 		t.Fatal("empty name should be refused")
 	}
@@ -322,7 +323,7 @@ func TestConfigEdits(t *testing.T) {
 	// editing the started current item keeps remaining under a new denominator
 	m = send(m, "c", "e", "tab", "backspace")
 	m = typeText(m, "2")
-	m = send(m, "tab", "tab", "tab", "tab", "enter")
+	m = send(m, "tab", "tab", "tab", "tab", "tab", "tab", "enter")
 	if m.c.byID(a).Seconds != 120 || m.s.Remaining != 50 {
 		t.Fatalf("duration edit: %+v", m.s)
 	}
@@ -340,6 +341,8 @@ func TestLayoutFits(t *testing.T) {
 	sizes := [][2]int{{34, 12}, {50, 16}, {80, 24}, {140, 45}}
 	m := withItems(t, "Photobucket", "Joojeh", "Secondary tasks with a long name")
 	m.c.Items[0].SourceConfig = strings.Repeat("a very long source value ", 20)
+	m.c.Items[1].TimesPerDay = 3
+	m.c.Items[2].ActiveDays = []int{int(time.Wednesday), int(time.Friday)}
 	m.refreshSources()
 
 	screens := map[string]model{}
@@ -349,6 +352,8 @@ func TestLayoutFits(t *testing.T) {
 	screens["config"] = send(m, "c")
 	screens["delete"] = send(m, "c", "d")
 	screens["form"] = send(m, "c", "e")
+	screens["formdays"] = send(m, "c", "e", "tab", "tab", "tab", "tab")
+	screens["emptyday"] = withSched(t, item{Name: "A", ActiveDays: []int{}})
 	screens["finish"] = send(m, "enter", "y", "F", "y")
 	fr := m
 	fr.scr = scrFirstRun
@@ -446,5 +451,278 @@ func TestLoadConfigRepairsIDs(t *testing.T) {
 			t.Fatalf("ids not repaired and persisted: %+v / %+v", c1.Items, c2.Items)
 		}
 		ids[it.ID] = true
+	}
+}
+
+// items with explicit scheduling; blank fields get workable defaults
+func withSched(t *testing.T, items ...item) model {
+	c := &config{}
+	for _, it := range items {
+		it.ID = newID()
+		it.Seconds = 60
+		it.Source = srcStatic
+		it.SourceConfig = it.Name + " text"
+		if it.ActiveDays == nil {
+			it.ActiveDays = allDays()
+		}
+		c.Items = append(c.Items, it)
+	}
+	c.save()
+	return newModel()
+}
+
+func TestLegacyConfigGetsEveryDay(t *testing.T) {
+	setup(t)
+	writeJSON(configPath(), &config{Items: []item{
+		{ID: "a", Name: "A", Seconds: 60, Source: srcStatic},
+	}})
+	if got := loadConfig().Items[0].daysLabel(); got != "Every day" {
+		t.Fatalf("missing days should mean every day, got %q", got)
+	}
+	// the repair is written back, so the next load sees it explicitly
+	if got := loadConfig().Items[0].ActiveDays; len(got) != 7 {
+		t.Fatalf("repair not persisted: %v", got)
+	}
+
+	writeJSON(configPath(), &config{Items: []item{
+		{ID: "a", Name: "A", Seconds: 60, Source: srcStatic, ActiveDays: []int{}},
+	}})
+	if got := loadConfig().Items[0].daysLabel(); got != "Never" {
+		t.Fatalf("an explicit empty list means never, got %q", got)
+	}
+}
+
+func TestDaysLabel(t *testing.T) {
+	cases := []struct {
+		days []int
+		want string
+	}{
+		{allDays(), "Every day"},
+		{weekdayDays(), "Weekdays"},
+		{[]int{}, "Never"},
+		{[]int{int(time.Saturday), int(time.Monday)}, "Mo Sa"},
+		{normalizeDays([]int{5, 0, 1, 2, 3}), "Mo Tu We Fr Su"},
+	}
+	for _, c := range cases {
+		if got := (item{ActiveDays: c.days}).daysLabel(); got != c.want {
+			t.Errorf("%v: want %q, got %q", c.days, c.want, got)
+		}
+	}
+}
+
+func TestDailyLimitExhausts(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", TimesPerDay: 1}, item{Name: "B"})
+	a, b := m.c.Items[0].ID, m.c.Items[1].ID
+
+	m = send(m, "enter", "y")
+	if m.s.Current != b {
+		t.Fatal("B should run after A")
+	}
+	m = send(m, "enter", "y")
+	if m.s.Current != b {
+		t.Fatalf("A is used up, so B starts the new cycle: %+v", m.s)
+	}
+	if m.s.eligible(*m.c.byID(a)) {
+		t.Fatal("A should be out for the day")
+	}
+	if cs, _ := m.crumbs(); len(cs) != 1 {
+		t.Fatalf("exhausted A should leave the trail: %v", cs)
+	}
+
+	// raising the limit puts it straight back in the cycle
+	m.c.Items[0].TimesPerDay = 2
+	if !m.s.eligible(*m.c.byID(a)) {
+		t.Fatal("a raised limit should re-admit the item")
+	}
+}
+
+func TestSkipCountsAgainstLimit(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", TimesPerDay: 1}, item{Name: "B"})
+	a := m.c.Items[0].ID
+
+	m = send(m, "s", "y")
+	if m.s.countToday(a) != 1 || m.s.eligible(*m.c.byID(a)) {
+		t.Fatalf("a skip should spend a repeat: %+v", m.s)
+	}
+}
+
+func TestWeekdayGatingUsesLogicalDay(t *testing.T) {
+	setClock := setup(t)
+	// 1:30am Thursday still belongs to Wednesday
+	setClock(time.Date(2026, 10, 22, 1, 30, 0, 0, time.Local))
+	m := withSched(t,
+		item{Name: "Thu", ActiveDays: []int{int(time.Thursday)}},
+		item{Name: "Wed", ActiveDays: []int{int(time.Wednesday)}},
+	)
+	if it := m.c.byID(m.s.Current); it == nil || it.Name != "Wed" {
+		t.Fatalf("want Wednesday's item, got %+v", it)
+	}
+}
+
+func TestNeverItemNeverRuns(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", ActiveDays: []int{}}, item{Name: "B"})
+	b := m.c.Items[1].ID
+	if m.s.Current != b {
+		t.Fatal("a Never item should not become current")
+	}
+	m = send(m, "enter", "y")
+	if m.s.Current != b {
+		t.Fatalf("the cycle should be B alone: %+v", m.s)
+	}
+	if cs, _ := m.crumbs(); len(cs) != 1 {
+		t.Fatalf("Never item should stay off the trail: %v", cs)
+	}
+}
+
+func TestEmptyDay(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", ActiveDays: []int{}})
+	if m.s.Current != "" || m.scr != scrCycler {
+		t.Fatalf("nothing to run should leave no current item: %+v", m.s)
+	}
+	if !strings.Contains(m.View(), "Enjoy your day off") {
+		t.Fatalf("want the empty-day copy:\n%s", m.View())
+	}
+	// the timer keys are dead, the day keys are not
+	m = send(m, " ", "enter", "s", "p")
+	if m.s.Timer != timerIdle || m.prompt != nil || len(m.s.Log) != 0 {
+		t.Fatalf("timer keys should be inert: %+v", m.s)
+	}
+	m = send(m, "F", "y")
+	if m.scr != scrFinish {
+		t.Fatal("finish day should still work")
+	}
+}
+
+func TestPassReturnsNextCycle(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", TimesPerDay: 2}, item{Name: "B"})
+	a, b := m.c.Items[0].ID, m.c.Items[1].ID
+
+	m = send(m, "p", "y")
+	if m.s.Current != b || len(m.s.Log) != 0 || !m.s.passedThisCycle(a) {
+		t.Fatalf("pass should step over A silently: %+v", m.s)
+	}
+	if m.s.countToday(a) != 0 {
+		t.Fatal("a pass should not spend a repeat")
+	}
+
+	m = send(m, "enter", "y")
+	if m.s.Current != a || len(m.s.Passed) != 0 {
+		t.Fatalf("A should come back next cycle: %+v", m.s)
+	}
+	if !m.s.Log[0].Last {
+		t.Fatal("B closed the cycle")
+	}
+
+	// B has no limit, so it cannot be passed
+	m = send(m, "enter", "y")
+	if m.s.Current != b {
+		t.Fatal("setup: B should be current")
+	}
+	m = send(m, "p")
+	if m.prompt != nil {
+		t.Fatal("pass should be inert on an unrationed item")
+	}
+}
+
+func TestPassOnSoleItemResets(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", TimesPerDay: 1})
+	a := m.c.Items[0].ID
+	m = send(m, " ")
+	m = runClock(m, 10)
+
+	m = send(m, "p", "y")
+	if m.s.Current != a || m.s.Timer != timerIdle || m.s.Remaining != 60 {
+		t.Fatalf("passing the only item should reset its timer: %+v", m.s)
+	}
+	if len(m.s.Log) != 0 || len(m.s.Passed) != 0 {
+		t.Fatalf("nothing should be recorded: %+v", m.s)
+	}
+}
+
+func TestPassClosingCycleMarksLast(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"}, item{Name: "B", TimesPerDay: 1})
+	a := m.c.Items[0].ID
+
+	m = send(m, "enter", "y")
+	m = send(m, "p", "y")
+	if m.s.Current != a {
+		t.Fatalf("the cycle should restart on A: %+v", m.s)
+	}
+	if len(m.s.Log) != 1 || !m.s.Log[0].Last {
+		t.Fatalf("A was the last thing logged in that cycle: %+v", m.s.Log)
+	}
+}
+
+func TestEditToNeverHandsOff(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"}, item{Name: "B"})
+	b := m.c.Items[1].ID
+
+	// open A, walk to the day cells, switch all seven off, save
+	m = send(m, "c", "e", "tab", "tab", "tab", "tab", "right", "right")
+	for range 7 {
+		m = send(m, " ", "right")
+	}
+	m = send(m, "tab", "tab", "tab", "enter")
+
+	if m.scr != scrConfig || m.c.Items[0].daysLabel() != "Never" {
+		t.Fatalf("days not saved: %+v", m.c.Items[0])
+	}
+	if m.s.Current != b {
+		t.Fatalf("scheduling the current item out should hand off: %+v", m.s)
+	}
+}
+
+func TestFormPresetsAndLimit(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"})
+	m = send(m, "c", "e", "tab", "tab", "tab")
+	m = typeText(m, "0")
+	if v := m.f.times.Value(); v != "0" {
+		t.Fatalf("times input: %q", v)
+	}
+	m = typeText(m, "9x9")
+	if v := m.f.times.Value(); v != "09" {
+		t.Fatalf("times should gate to two digits: %q", v)
+	}
+
+	m = send(m, "tab", " ")
+	if m.f.dayCur != cellEveryDay || !slices.Equal(m.f.days, allDays()) {
+		t.Fatalf("every day preset: %v", m.f.days)
+	}
+	m = send(m, "right", " ")
+	if !slices.Equal(m.f.days, weekdayDays()) {
+		t.Fatalf("weekdays preset: %v", m.f.days)
+	}
+	// toggling one weekend day back on leaves a custom set
+	m = send(m, "right", "right", "right", "right", "right", "right", " ")
+	if lbl := (item{ActiveDays: m.f.days}).daysLabel(); lbl != "Mo Tu We Th Fr Sa" {
+		t.Fatalf("custom set: %q", lbl)
+	}
+
+	m = send(m, "tab", "tab", "tab", "enter")
+	if it := m.c.Items[0]; it.TimesPerDay != 9 || it.daysLabel() != "Mo Tu We Th Fr Sa" {
+		t.Fatalf("saved item: %+v", it)
+	}
+	if m.c.Items[0].limitLabel() != "9" {
+		t.Fatal("limit label")
+	}
+}
+
+func TestZeroLimitSavesAsNoLimit(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", TimesPerDay: 3})
+	m = send(m, "c", "e", "tab", "tab", "tab", "backspace")
+	m = typeText(m, "0")
+	m = send(m, "tab", "tab", "tab", "tab", "enter")
+	if it := m.c.Items[0]; it.TimesPerDay != 0 || it.limitLabel() != "no limit" {
+		t.Fatalf("0 should clear the limit: %+v", it)
 	}
 }

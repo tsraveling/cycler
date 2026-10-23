@@ -6,19 +6,28 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // @region app:config -- CYCLER ITEMS + PREFS
 
 const (
-	maxNameLen = 24
-	maxMinutes = 180
+	maxNameLen     = 24
+	maxMinutes     = 180
+	maxTimesPerDay = 99
 )
 
 type item struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Seconds      int        `json:"seconds"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Seconds int    `json:"seconds"`
+	// repeats allowed per day; 0 is no limit
+	TimesPerDay int `json:"timesPerDay"`
+	// time.Weekday values the item runs on; empty is never
+	ActiveDays   []int      `json:"activeDays"`
 	Source       sourceType `json:"source"`
 	SourceConfig string     `json:"sourceConfig"`
 }
@@ -26,6 +35,87 @@ type item struct {
 type config struct {
 	Items    []item `json:"items"`
 	HelpFull bool   `json:"helpFull"`
+}
+
+// the order days are stored and shown in
+var weekOrder = []time.Weekday{
+	time.Monday, time.Tuesday, time.Wednesday, time.Thursday,
+	time.Friday, time.Saturday, time.Sunday,
+}
+
+var dayAbbrev = map[time.Weekday]string{
+	time.Monday:    "Mo",
+	time.Tuesday:   "Tu",
+	time.Wednesday: "We",
+	time.Thursday:  "Th",
+	time.Friday:    "Fr",
+	time.Saturday:  "Sa",
+	time.Sunday:    "Su",
+}
+
+func allDays() []int {
+	out := make([]int, 0, len(weekOrder))
+	for _, d := range weekOrder {
+		out = append(out, int(d))
+	}
+	return out
+}
+
+func weekdayDays() []int {
+	out := make([]int, 0, 5)
+	for _, d := range weekOrder[:5] {
+		out = append(out, int(d))
+	}
+	return out
+}
+
+// deduped, week order, out-of-range dropped. never nil, so an empty result
+// reads as a deliberate "never" rather than a missing field.
+func normalizeDays(days []int) []int {
+	seen := map[int]bool{}
+	for _, d := range days {
+		if d >= 0 && d <= 6 {
+			seen[d] = true
+		}
+	}
+	out := []int{}
+	for _, d := range weekOrder {
+		if seen[int(d)] {
+			out = append(out, int(d))
+		}
+	}
+	return out
+}
+
+func (it item) activeOn(wd time.Weekday) bool { return slices.Contains(it.ActiveDays, int(wd)) }
+
+func (it item) daysLabel() string {
+	var on []time.Weekday
+	for _, d := range weekOrder {
+		if it.activeOn(d) {
+			on = append(on, d)
+		}
+	}
+	switch {
+	case len(on) == 0:
+		return "Never"
+	case len(on) == 7:
+		return "Every day"
+	case len(on) == 5 && !it.activeOn(time.Saturday) && !it.activeOn(time.Sunday):
+		return "Weekdays"
+	}
+	parts := make([]string, len(on))
+	for i, d := range on {
+		parts[i] = dayAbbrev[d]
+	}
+	return strings.Join(parts, " ")
+}
+
+func (it item) limitLabel() string {
+	if it.TimesPerDay < 1 {
+		return "no limit"
+	}
+	return strconv.Itoa(it.TimesPerDay)
 }
 
 // overridable so tests never touch the real home directory
@@ -63,6 +153,24 @@ func loadConfig() *config {
 		}
 		if !it.Source.valid() {
 			it.Source = srcStatic
+		}
+		if it.TimesPerDay < 0 {
+			it.TimesPerDay = 0
+			repaired = true
+		}
+		if it.TimesPerDay > maxTimesPerDay {
+			it.TimesPerDay = maxTimesPerDay
+			repaired = true
+		}
+		// a config written before scheduling existed has no days at all, which
+		// means every day rather than never
+		days := normalizeDays(it.ActiveDays)
+		if it.ActiveDays == nil {
+			days = allDays()
+		}
+		if !slices.Equal(days, it.ActiveDays) {
+			it.ActiveDays = days
+			repaired = true
 		}
 		valid = append(valid, it)
 	}
