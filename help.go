@@ -10,8 +10,8 @@ var (
 	firstRunHelp = []string{"c configure", "q quit"}
 	finishHelp   = []string{"press any key"}
 	cyclerHelp   = []string{
-		"space start/pause", "enter complete", "s skip", "F finish day",
-		"c configure", "? help", "q quit",
+		"space start/pause", "enter/c complete", "s skip", "F finish day",
+		"C configure", "? help", "q quit",
 	}
 	configHelp = []string{
 		"a add", "e/enter edit", "j/k move", "J/K reorder", "d delete",

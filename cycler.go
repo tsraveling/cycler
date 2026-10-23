@@ -27,7 +27,7 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.toggleHelp()
 
-	case "c", "C":
+	case "C":
 		cmd := m.openConfig()
 		return m, cmd
 
@@ -45,7 +45,7 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-	case "enter":
+	case "enter", "c":
 		if m.s.Timer == timerDone {
 			cmd := m.advance(false)
 			return m, cmd

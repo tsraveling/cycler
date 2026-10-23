@@ -183,6 +183,20 @@ func TestSleepPauses(t *testing.T) {
 	}
 }
 
+func TestCompleteKey(t *testing.T) {
+	setup(t)
+	m := withItems(t, "A", "B")
+
+	m = send(m, "c", "y")
+	if len(m.s.Log) != 1 || m.s.Log[0].Skipped {
+		t.Fatalf("c should complete like enter: %+v", m.s.Log)
+	}
+	m = send(m, "C")
+	if m.scr != scrConfig {
+		t.Fatal("C should open config")
+	}
+}
+
 func TestPrompts(t *testing.T) {
 	setup(t)
 	m := withItems(t, "A", "B", "C")
@@ -259,7 +273,7 @@ func TestRolloverHourKeepsDay(t *testing.T) {
 func TestFormGating(t *testing.T) {
 	setup(t)
 	m := withItems(t, "A")
-	m = send(m, "c", "e", "tab")
+	m = send(m, "C", "e", "tab")
 	m = send(m, "backspace")
 	m = typeText(m, "999")
 	if v := m.f.mins.Value(); v != "99" {
@@ -305,7 +319,7 @@ func TestConfigEdits(t *testing.T) {
 	a, b, c := m.c.Items[0].ID, m.c.Items[1].ID, m.c.Items[2].ID
 
 	// timer keeps running inside config
-	m = send(m, " ", "c")
+	m = send(m, " ", "C")
 	m = runClock(m, 10)
 	if m.s.Remaining != 50 {
 		t.Fatalf("clock should run under config: %d", m.s.Remaining)
@@ -321,7 +335,7 @@ func TestConfigEdits(t *testing.T) {
 	}
 
 	// editing the started current item keeps remaining under a new denominator
-	m = send(m, "c", "e", "tab", "backspace")
+	m = send(m, "C", "e", "tab", "backspace")
 	m = typeText(m, "2")
 	m = send(m, "tab", "tab", "tab", "tab", "tab", "tab", "enter")
 	if m.c.byID(a).Seconds != 120 || m.s.Remaining != 50 {
@@ -349,10 +363,10 @@ func TestLayoutFits(t *testing.T) {
 	screens["cycler"] = m
 	screens["paused"] = send(m, " ", " ")
 	screens["prompt"] = send(m, "F")
-	screens["config"] = send(m, "c")
-	screens["delete"] = send(m, "c", "d")
-	screens["form"] = send(m, "c", "e")
-	screens["formdays"] = send(m, "c", "e", "tab", "tab", "tab", "tab")
+	screens["config"] = send(m, "C")
+	screens["delete"] = send(m, "C", "d")
+	screens["form"] = send(m, "C", "e")
+	screens["formdays"] = send(m, "C", "e", "tab", "tab", "tab", "tab")
 	screens["emptyday"] = withSched(t, item{Name: "A", ActiveDays: []int{}})
 	screens["finish"] = send(m, "enter", "y", "F", "y")
 	fr := m
@@ -385,7 +399,7 @@ func TestReorderKeepsProgress(t *testing.T) {
 	a, b, c := m.c.Items[0].ID, m.c.Items[1].ID, m.c.Items[2].ID
 
 	// A done, then moved last: still done, C runs next, C closes the cycle
-	m = send(m, "enter", "y", "c", "k", "J", "J", "esc")
+	m = send(m, "enter", "y", "C", "k", "J", "J", "esc")
 	if !m.s.doneThisCycle(a) || m.s.Current != b {
 		t.Fatalf("progress lost: %+v", m.s)
 	}
@@ -405,7 +419,7 @@ func TestReorderOpenAboveCurrent(t *testing.T) {
 	m := withItems(t, "A", "B", "C")
 	b, c := m.c.Items[1].ID, m.c.Items[2].ID
 
-	m = send(m, "enter", "y", "c", "j", "K", "esc")
+	m = send(m, "enter", "y", "C", "j", "K", "esc")
 	if m.c.Items[1].ID != c || m.s.Current != b {
 		t.Fatalf("setup: %+v", m.s)
 	}
@@ -689,7 +703,7 @@ func TestEditToNeverHandsOff(t *testing.T) {
 	b := m.c.Items[1].ID
 
 	// open A, walk to the day cells, switch all seven off, save
-	m = send(m, "c", "e", "tab", "tab", "tab", "tab", "right", "right")
+	m = send(m, "C", "e", "tab", "tab", "tab", "tab", "right", "right")
 	for range 7 {
 		m = send(m, " ", "right")
 	}
@@ -706,7 +720,7 @@ func TestEditToNeverHandsOff(t *testing.T) {
 func TestFormPresetsAndLimit(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A"})
-	m = send(m, "c", "e", "tab", "tab", "tab")
+	m = send(m, "C", "e", "tab", "tab", "tab")
 	m = typeText(m, "0")
 	if v := m.f.times.Value(); v != "0" {
 		t.Fatalf("times input: %q", v)
@@ -742,7 +756,7 @@ func TestFormPresetsAndLimit(t *testing.T) {
 func TestZeroLimitSavesAsNoLimit(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A", TimesPerDay: 3})
-	m = send(m, "c", "e", "tab", "tab", "tab", "backspace")
+	m = send(m, "C", "e", "tab", "tab", "tab", "backspace")
 	m = typeText(m, "0")
 	m = send(m, "tab", "tab", "tab", "tab", "enter")
 	if it := m.c.Items[0]; it.TimesPerDay != 0 || it.limitLabel() != "no limit" {
@@ -753,7 +767,7 @@ func TestZeroLimitSavesAsNoLimit(t *testing.T) {
 func TestZeroLimitIsNotAnEdit(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A"})
-	m = send(m, "c", "e", "tab", "tab", "tab")
+	m = send(m, "C", "e", "tab", "tab", "tab")
 	m = typeText(m, "0")
 	if m.f.dirty() {
 		t.Fatal("0 on an unlimited item is not a change")
@@ -778,7 +792,7 @@ func TestZeroLimitIsNotAnEdit(t *testing.T) {
 func TestHelpTogglesFromNumberFields(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A"})
-	m = send(m, "c", "e", "tab", "tab", "tab")
+	m = send(m, "C", "e", "tab", "tab", "tab")
 	full := m.c.HelpFull
 	m = send(m, "?")
 	if m.c.HelpFull == full {
