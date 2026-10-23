@@ -100,8 +100,18 @@ func newForm(it *item, w int) *form {
 func (f *form) values() formValues {
 	return formValues{
 		f.name.Value(), f.mins.Value(), f.secs.Value(),
-		f.times.Value(), daysKey(f.days), f.src.Value(), f.typ,
+		timesKey(f.times.Value()), daysKey(f.days), f.src.Value(), f.typ,
 	}
+}
+
+// every spelling of no limit compares equal, so typing a bare 0 into an
+// unlimited item is not an edit
+func timesKey(v string) string {
+	n, err := strconv.Atoi(v)
+	if err != nil || n == 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 // the day set as a comparable value, so dirty tracking stays a struct compare
@@ -135,6 +145,10 @@ func (f *form) inputs() map[field]*textinput.Model {
 }
 
 func (f *form) setFocus(to field) tea.Cmd {
+	// a limit of zero is no limit, which reads as an empty field
+	if n, err := strconv.Atoi(f.times.Value()); err == nil && n == 0 {
+		f.times.SetValue("")
+	}
 	f.focus = to
 	var cmd tea.Cmd
 	for k, in := range f.inputs() {
@@ -269,6 +283,10 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case fMin, fSec, fTimes:
+		if key == "?" {
+			m.toggleHelp()
+			return m, nil
+		}
 		return m, f.updateNumber(msg)
 	}
 

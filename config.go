@@ -162,10 +162,10 @@ func loadConfig() *config {
 			it.TimesPerDay = maxTimesPerDay
 			repaired = true
 		}
-		// a config written before scheduling existed has no days at all, which
-		// means every day rather than never
+		// a day list that is missing, or that nothing survives, means every day.
+		// only a list deliberately left empty means never.
 		days := normalizeDays(it.ActiveDays)
-		if it.ActiveDays == nil {
+		if it.ActiveDays == nil || (len(days) == 0 && len(it.ActiveDays) != 0) {
 			days = allDays()
 		}
 		if !slices.Equal(days, it.ActiveDays) {

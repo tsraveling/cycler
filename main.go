@@ -20,6 +20,7 @@ cycler keys:
   space   start / pause; on DONE, move to the next item
   enter   complete early (y/n); on DONE, move to the next item
   s       skip item (y/n)
+  p       pass a rationed item for this cycle (y/n)
   F       finish day (y/n)
   c       configure items
   ?       toggle full helpline
@@ -34,9 +35,19 @@ configure keys:
   esc           back
 
 item form:
+  Name              what the item is called
+  Timer             minutes and seconds
+  Times per day     repeats allowed today; blank is no limit
+  Active on         the weekdays the item runs on
+  Source type       where the item's current task is read from
+  Source config     a path, or the text for a static item
+
+form keys:
   tab / shift+tab   next / previous field
   enter             next field; on save, save
-  h/l, ←/→          change source type, or toggle save/cancel
+  h/l, ←/→          change source type, move the day cursor,
+                    or toggle save/cancel
+  space             toggle a day, or apply Every day / Weekdays
   esc               cancel (asks to discard changes)
 
 sources:
@@ -44,6 +55,10 @@ sources:
   Drawdeck        "current" front matter value
   Dispositio      "{milestone}: {task}" from the first unfinished milestone
   Static          fixed text
+
+an item runs only on its active weekdays, and only until it has
+used up its daily repeats; a skip spends a repeat, a pass does not.
+when nothing is left to run, the cycler shows an empty day.
 
 paths accept ~ and resolve relative to $HOME.
 state lives in ~/.config/cycler. the day rolls over at 4am.

@@ -249,10 +249,20 @@ func (s *dayState) nextOpen(c *config) int {
 }
 
 // the item that runs after the current one, wrapping into a new cycle; -1 when
-// nothing is left to run today
+// nothing is left to run today. assumes the current item is about to be
+// logged, so its run in progress is discounted: on its last allowed repeat it
+// cannot be its own successor.
 func (s *dayState) upcoming(c *config) int {
 	if next := s.nextOpen(c); next >= 0 {
 		return next
 	}
-	return s.firstEligible(c)
+	for i, it := range c.Items {
+		if it.ID == s.Current && it.TimesPerDay > 0 && s.countToday(it.ID)+1 >= it.TimesPerDay {
+			continue
+		}
+		if s.eligible(it) {
+			return i
+		}
+	}
+	return -1
 }

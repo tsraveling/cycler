@@ -177,7 +177,7 @@ func (m model) detailRows(w, rows int) []string {
 
 	limit, limitStyle := it.limitLabel(), grayStyle
 	if it.TimesPerDay > 0 {
-		limit = fmt.Sprintf("%s (%d done)", limit, m.s.countToday(it.ID))
+		limit = fmt.Sprintf("%s (%d used)", limit, m.s.countToday(it.ID))
 		limitStyle = textStyle
 	}
 	daysStyle := textStyle

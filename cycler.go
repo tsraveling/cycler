@@ -98,8 +98,6 @@ func (m model) updateEmptyDay(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q":
 		return m.quit()
-	case "?":
-		m.toggleHelp()
 	case "c", "C":
 		cmd := m.openConfig()
 		return m, cmd

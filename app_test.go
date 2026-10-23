@@ -591,9 +591,32 @@ func TestEmptyDay(t *testing.T) {
 	if m.s.Timer != timerIdle || m.prompt != nil || len(m.s.Log) != 0 {
 		t.Fatalf("timer keys should be inert: %+v", m.s)
 	}
+	// the helpline here is fixed, so ? has nothing to toggle
+	full := m.c.HelpFull
+	m = send(m, "?")
+	if m.c.HelpFull != full || loadConfig().HelpFull != full {
+		t.Fatal("? should not flip the help preference from the empty day")
+	}
 	m = send(m, "F", "y")
 	if m.scr != scrFinish {
 		t.Fatal("finish day should still work")
+	}
+}
+
+func TestLastRunHasNoNext(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", TimesPerDay: 1})
+	m = send(m, " ")
+	m = runClock(m, 61)
+	if m.s.Timer != timerDone {
+		t.Fatalf("want done: %+v", m.s)
+	}
+	if v := m.View(); !strings.Contains(v, "Last one today") {
+		t.Fatalf("an item on its last repeat cannot be its own next:\n%s", v)
+	}
+	m = send(m, " ")
+	if m.s.Current != "" {
+		t.Fatalf("that was the day: %+v", m.s)
 	}
 }
 
@@ -724,5 +747,54 @@ func TestZeroLimitSavesAsNoLimit(t *testing.T) {
 	m = send(m, "tab", "tab", "tab", "tab", "enter")
 	if it := m.c.Items[0]; it.TimesPerDay != 0 || it.limitLabel() != "no limit" {
 		t.Fatalf("0 should clear the limit: %+v", it)
+	}
+}
+
+func TestZeroLimitIsNotAnEdit(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"})
+	m = send(m, "c", "e", "tab", "tab", "tab")
+	m = typeText(m, "0")
+	if m.f.dirty() {
+		t.Fatal("0 on an unlimited item is not a change")
+	}
+	m = send(m, "esc")
+	if m.scr != scrConfig {
+		t.Fatal("esc should exit without a discard prompt")
+	}
+
+	// and it blanks back to the gray placeholder on the way out of the field
+	m = send(m, "e", "tab", "tab", "tab")
+	m = typeText(m, "0")
+	m = send(m, "tab")
+	if v := m.f.times.Value(); v != "" {
+		t.Fatalf("times should blank: %q", v)
+	}
+	if !strings.Contains(m.View(), "no limit") {
+		t.Fatalf("want the no-limit placeholder:\n%s", m.View())
+	}
+}
+
+func TestHelpTogglesFromNumberFields(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"})
+	m = send(m, "c", "e", "tab", "tab", "tab")
+	full := m.c.HelpFull
+	m = send(m, "?")
+	if m.c.HelpFull == full {
+		t.Fatal("? should toggle help from the times field")
+	}
+	if v := m.f.times.Value(); v != "" {
+		t.Fatalf("? should not reach the input: %q", v)
+	}
+}
+
+func TestUnreadableDaysFallBackToEveryDay(t *testing.T) {
+	setup(t)
+	writeJSON(configPath(), &config{Items: []item{
+		{ID: "a", Name: "A", Seconds: 60, Source: srcStatic, ActiveDays: []int{7, 99}},
+	}})
+	if got := loadConfig().Items[0].daysLabel(); got != "Every day" {
+		t.Fatalf("a day list nothing survives should not silently mean never, got %q", got)
 	}
 }
