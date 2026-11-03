@@ -152,7 +152,7 @@ func TestTimerRunsAndAdvances(t *testing.T) {
 		t.Fatal("done view should show next item")
 	}
 	m = send(m, " ")
-	if m.s.Current != m.c.Items[1].ID || m.s.Timer != timerIdle || len(m.s.Log) != 1 {
+	if m.s.Current != m.c.Items[1].ID || m.s.Timer != timerGoing || len(m.s.Log) != 1 {
 		t.Fatalf("advance failed: %+v", m.s)
 	}
 	if !m.s.doneThisCycle(m.c.Items[0].ID) {
@@ -160,7 +160,6 @@ func TestTimerRunsAndAdvances(t *testing.T) {
 	}
 
 	// enter on done advances without a prompt, wrapping the cycle
-	m = send(m, " ")
 	m = runClock(m, 61)
 	m = send(m, "enter")
 	if m.prompt != nil || m.s.Current != m.c.Items[0].ID || len(m.s.CycleDone) != 0 {

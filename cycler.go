@@ -42,6 +42,7 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.s.save()
 		case timerDone:
 			cmd := m.advance(false)
+			m.startCurrent()
 			return m, cmd
 		}
 
@@ -118,6 +119,16 @@ func (m *model) advance(skipped bool) tea.Cmd {
 	m.carry = 0
 	m.s.save()
 	return m.sourcesCmd()
+}
+
+// runs the item the cycle now points at, if there is one
+func (m *model) startCurrent() {
+	if m.s.Current == "" || m.s.Timer != timerIdle {
+		return
+	}
+	m.s.Timer = timerGoing
+	m.carry = 0
+	m.s.save()
 }
 
 func (m *model) passCurrent() tea.Cmd {
