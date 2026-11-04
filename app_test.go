@@ -72,6 +72,35 @@ func runClock(m model, secs int) model {
 	return m
 }
 
+// walks the form selection to a field; forms are short so a bounded loop is
+// cheaper than hard-coding key counts that shift when lines are added
+func toField(m model, fl field) model {
+	// j is literal text while editing, so the cursor has to come out first
+	if m.f.editing {
+		m = send(m, "esc")
+	}
+	for i := 0; i < 2*len(m.f.lines()); i++ {
+		if m.f.focus == fl && !m.f.editing {
+			return m
+		}
+		m = send(m, "j")
+	}
+	return m
+}
+
+// selects a field and opens it for editing
+func editField(m model, fl field) model {
+	return send(toField(m, fl), "enter")
+}
+
+// commits the open edit, walks to the buttons and saves
+func saveFormKeys(m model) model {
+	if m.f.editing {
+		m = send(m, "esc")
+	}
+	return send(toField(m, fButtons), "enter")
+}
+
 func withItems(t *testing.T, names ...string) model {
 	c := &config{}
 	for _, n := range names {
@@ -102,9 +131,12 @@ func TestFirstRunToCycler(t *testing.T) {
 	m = typeText(m, "1")
 	m = send(m, "tab")
 	m = typeText(m, "30")
-	m = send(m, "tab", "tab", "tab", "right", "right", "right", "tab")
+	m = send(m, "esc")
+	m = toField(m, fSrcType)
+	m = send(m, "right", "right", "right")
+	m = editField(m, fSrc)
 	m = typeText(m, "hello")
-	m = send(m, "tab", "enter")
+	m = saveFormKeys(m)
 	if m.scr != scrConfig || len(m.c.Items) != 1 {
 		t.Fatalf("save failed: scr %d items %d", m.scr, len(m.c.Items))
 	}
@@ -254,36 +286,49 @@ func TestPreviousDayFinish(t *testing.T) {
 	}
 }
 
-func TestRolloverHourKeepsDay(t *testing.T) {
+func TestMidnightRollsOver(t *testing.T) {
 	setClock := setup(t)
 	m := withItems(t, "A")
 	m = send(m, "enter", "y")
 
-	setClock(time.Date(2026, 10, 22, 1, 30, 0, 0, time.Local))
+	setClock(time.Date(2026, 10, 21, 23, 59, 0, 0, time.Local))
 	m = newModel()
 	if m.scr != scrCycler || len(m.s.Log) != 1 {
-		t.Fatal("1:30am should still be the previous logical day")
+		t.Fatalf("23:59 is still the same day: %+v", m.s)
 	}
-	if !strings.Contains(m.dateLabel(), "☾ Thu, Oct 22") {
-		t.Fatalf("want moon date, got %q", m.dateLabel())
+
+	setClock(time.Date(2026, 10, 22, 0, 1, 0, 0, time.Local))
+	m = newModel()
+	if m.scr != scrFinish {
+		t.Fatal("past midnight should close out the previous day")
+	}
+	if len(m.s.Log) != 0 {
+		t.Fatalf("new day should start empty: %+v", m.s)
 	}
 }
 
 func TestFormGating(t *testing.T) {
 	setup(t)
 	m := withItems(t, "A")
-	m = send(m, "C", "e", "tab")
+	m = send(m, "C", "e")
+	m = editField(m, fTimer)
 	m = send(m, "backspace")
 	m = typeText(m, "999")
-	if v := m.f.mins.Value(); v != "99" {
+	if v := m.f.val(fTimer, 0); v != "99" {
 		t.Fatalf("minutes gate: %q", v)
 	}
 	m = send(m, "tab", "backspace", "backspace")
 	m = typeText(m, "7x5")
-	if v := m.f.secs.Value(); v != "7" {
+	if v := m.f.val(fTimer, 1); v != "7" {
 		t.Fatalf("seconds gate: %q", v)
 	}
 
+	// esc commits the edit rather than reverting it, so cancelling takes a
+	// second esc from the selected line
+	m = send(m, "esc")
+	if m.f.editing {
+		t.Fatal("esc should leave edit mode")
+	}
 	m = send(m, "esc")
 	if m.prompt == nil || m.prompt.kind != confirmDiscard || !m.f.cancelSel {
 		t.Fatal("dirty esc should prompt discard")
@@ -303,10 +348,11 @@ func TestFormGating(t *testing.T) {
 	}
 
 	m = send(m, "e")
+	m = editField(m, fName)
 	for range 5 {
 		m = send(m, "backspace")
 	}
-	m = send(m, "tab", "tab", "tab", "tab", "tab", "tab", "tab", "enter")
+	m = saveFormKeys(m)
 	if m.f == nil || m.f.err != "Name is required" {
 		t.Fatal("empty name should be refused")
 	}
@@ -334,9 +380,11 @@ func TestConfigEdits(t *testing.T) {
 	}
 
 	// editing the started current item keeps remaining under a new denominator
-	m = send(m, "C", "e", "tab", "backspace")
+	m = send(m, "C", "e")
+	m = editField(m, fTimer)
+	m = send(m, "backspace")
 	m = typeText(m, "2")
-	m = send(m, "tab", "tab", "tab", "tab", "tab", "tab", "enter")
+	m = saveFormKeys(m)
 	if m.c.byID(a).Seconds != 120 || m.s.Remaining != 50 {
 		t.Fatalf("duration edit: %+v", m.s)
 	}
@@ -365,7 +413,7 @@ func TestLayoutFits(t *testing.T) {
 	screens["config"] = send(m, "C")
 	screens["delete"] = send(m, "C", "d")
 	screens["form"] = send(m, "C", "e")
-	screens["formdays"] = send(m, "C", "e", "tab", "tab", "tab", "tab")
+	screens["formdays"] = toField(send(m, "C", "e"), fDays)
 	screens["emptyday"] = withSched(t, item{Name: "A", ActiveDays: []int{}})
 	screens["finish"] = send(m, "enter", "y", "F", "y")
 	fr := m
@@ -563,12 +611,19 @@ func TestSkipCountsAgainstLimit(t *testing.T) {
 
 func TestWeekdayGatingUsesLogicalDay(t *testing.T) {
 	setClock := setup(t)
-	// 1:30am Thursday still belongs to Wednesday
+	// the day turns over at midnight, so 1:30am Thursday is Thursday
 	setClock(time.Date(2026, 10, 22, 1, 30, 0, 0, time.Local))
 	m := withSched(t,
 		item{Name: "Thu", ActiveDays: []int{int(time.Thursday)}},
 		item{Name: "Wed", ActiveDays: []int{int(time.Wednesday)}},
 	)
+	if it := m.c.byID(m.s.Current); it == nil || it.Name != "Thu" {
+		t.Fatalf("want Thursday's item, got %+v", it)
+	}
+
+	// and 23:59 the evening before is still Wednesday
+	setClock(time.Date(2026, 10, 21, 23, 59, 0, 0, time.Local))
+	m = newModel()
 	if it := m.c.byID(m.s.Current); it == nil || it.Name != "Wed" {
 		t.Fatalf("want Wednesday's item, got %+v", it)
 	}
@@ -702,11 +757,13 @@ func TestEditToNeverHandsOff(t *testing.T) {
 	b := m.c.Items[1].ID
 
 	// open A, walk to the day cells, switch all seven off, save
-	m = send(m, "C", "e", "tab", "tab", "tab", "tab", "right", "right")
+	m = send(m, "C", "e")
+	m = toField(m, fDays)
+	m = send(m, "right", "right")
 	for range 7 {
 		m = send(m, " ", "right")
 	}
-	m = send(m, "tab", "tab", "tab", "enter")
+	m = saveFormKeys(m)
 
 	if m.scr != scrConfig || m.c.Items[0].daysLabel() != "Never" {
 		t.Fatalf("days not saved: %+v", m.c.Items[0])
@@ -719,17 +776,20 @@ func TestEditToNeverHandsOff(t *testing.T) {
 func TestFormPresetsAndLimit(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A"})
-	m = send(m, "C", "e", "tab", "tab", "tab")
+	m = send(m, "C", "e")
+	m = editField(m, fTimes)
 	m = typeText(m, "0")
-	if v := m.f.times.Value(); v != "0" {
+	if v := m.f.val(fTimes, 0); v != "0" {
 		t.Fatalf("times input: %q", v)
 	}
 	m = typeText(m, "9x9")
-	if v := m.f.times.Value(); v != "09" {
+	if v := m.f.val(fTimes, 0); v != "09" {
 		t.Fatalf("times should gate to two digits: %q", v)
 	}
 
-	m = send(m, "tab", " ")
+	m = send(m, "esc")
+	m = toField(m, fDays)
+	m = send(m, " ")
 	if m.f.dayCur != cellEveryDay || !slices.Equal(m.f.days, allDays()) {
 		t.Fatalf("every day preset: %v", m.f.days)
 	}
@@ -743,7 +803,7 @@ func TestFormPresetsAndLimit(t *testing.T) {
 		t.Fatalf("custom set: %q", lbl)
 	}
 
-	m = send(m, "tab", "tab", "tab", "enter")
+	m = saveFormKeys(m)
 	if it := m.c.Items[0]; it.TimesPerDay != 9 || it.daysLabel() != "Mo Tu We Th Fr Sa" {
 		t.Fatalf("saved item: %+v", it)
 	}
@@ -755,9 +815,11 @@ func TestFormPresetsAndLimit(t *testing.T) {
 func TestZeroLimitSavesAsNoLimit(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A", TimesPerDay: 3})
-	m = send(m, "C", "e", "tab", "tab", "tab", "backspace")
+	m = send(m, "C", "e")
+	m = editField(m, fTimes)
+	m = send(m, "backspace")
 	m = typeText(m, "0")
-	m = send(m, "tab", "tab", "tab", "tab", "enter")
+	m = saveFormKeys(m)
 	if it := m.c.Items[0]; it.TimesPerDay != 0 || it.limitLabel() != "no limit" {
 		t.Fatalf("0 should clear the limit: %+v", it)
 	}
@@ -766,21 +828,23 @@ func TestZeroLimitSavesAsNoLimit(t *testing.T) {
 func TestZeroLimitIsNotAnEdit(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A"})
-	m = send(m, "C", "e", "tab", "tab", "tab")
+	m = send(m, "C", "e")
+	m = editField(m, fTimes)
 	m = typeText(m, "0")
 	if m.f.dirty() {
 		t.Fatal("0 on an unlimited item is not a change")
 	}
-	m = send(m, "esc")
+	m = send(m, "esc", "esc")
 	if m.scr != scrConfig {
 		t.Fatal("esc should exit without a discard prompt")
 	}
 
 	// and it blanks back to the gray placeholder on the way out of the field
-	m = send(m, "e", "tab", "tab", "tab")
+	m = send(m, "e")
+	m = editField(m, fTimes)
 	m = typeText(m, "0")
 	m = send(m, "tab")
-	if v := m.f.times.Value(); v != "" {
+	if v := m.f.val(fTimes, 0); v != "" {
 		t.Fatalf("times should blank: %q", v)
 	}
 	if !strings.Contains(m.View(), "no limit") {
@@ -791,13 +855,14 @@ func TestZeroLimitIsNotAnEdit(t *testing.T) {
 func TestHelpTogglesFromNumberFields(t *testing.T) {
 	setup(t)
 	m := withSched(t, item{Name: "A"})
-	m = send(m, "C", "e", "tab", "tab", "tab")
+	m = send(m, "C", "e")
+	m = toField(m, fTimes)
 	full := m.c.HelpFull
 	m = send(m, "?")
 	if m.c.HelpFull == full {
 		t.Fatal("? should toggle help from the times field")
 	}
-	if v := m.f.times.Value(); v != "" {
+	if v := m.f.val(fTimes, 0); v != "" {
 		t.Fatalf("? should not reach the input: %q", v)
 	}
 }

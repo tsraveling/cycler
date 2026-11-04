@@ -18,19 +18,23 @@ usage:
 
 cycler keys:
   space   start / pause; on DONE, move to the next item
-  enter   complete early (y/n); on DONE, move to the next item
+  c       complete early (y/n); on DONE, move to the next item
   s       skip item (y/n)
   p       pass a rationed item for this cycle (y/n)
+  f       finish the current block early (y/n)
+  e       extend the current block
   F       finish day (y/n)
-  c       configure items
+  C       configure items and blocks
   ?       toggle full helpline
   q       quit (a running timer is saved paused)
 
 configure keys:
-  a             add item
-  e, enter      edit item
+  tab           switch between Cycler Config and Block Admin
+  a             add
+  o             insert after the selection
+  e, enter      edit
   j/k, ↑/↓      select
-  J/K, ⇧↑/⇧↓    reorder
+  J/K, ⇧↑/⇧↓    reorder (items only)
   d             delete (y/n)
   esc           back
 
@@ -42,13 +46,34 @@ item form:
   Source type       where the item's current task is read from
   Source config     a path, or the text for a static item
 
+block form:
+  Title             what the block is called
+  Type              Standard shows a clock; Cycler runs the cycler
+  Color             the block's color; Standard blocks only
+  Start, End        24-hour hh:mm
+  Active on         the weekdays the block runs on
+  Source type       where the block's current task is read from
+  Source config     a path, or the text for a static block
+
 form keys:
-  tab / shift+tab   next / previous field
-  enter             next field; on save, save
-  h/l, ←/→          change source type, move the day cursor,
+  j/k, ↑/↓          move between lines
+  enter             start editing a line; commit and blur when editing
+  esc               commit and blur when editing, otherwise cancel
+  tab / shift+tab   next / previous input
+  h/l, ←/→          change a picker, move the day cursor,
                     or toggle save/cancel
   space             toggle a day, or apply Every day / Weekdays
-  esc               cancel (asks to discard changes)
+
+blocks:
+  a block is a titled window of wall-clock time on a set of weekdays.
+  with no blocks configured, cycler behaves as it always has. with
+  blocks, the day reads: Sleep before the first, the block you are in,
+  FREE TIME between blocks, and Day Done after the last.
+
+  f ends the current block now and pulls the next one forward. e
+  extends it, cancelling any block the extension swallows. a cycler
+  block whose end passes while its timer is still running is held open
+  until the item is finished.
 
 sources:
   Markdown TODO   first unchecked checkbox in a file
@@ -61,7 +86,7 @@ used up its daily repeats; a skip spends a repeat, a pass does not.
 when nothing is left to run, the cycler shows an empty day.
 
 paths accept ~ and resolve relative to $HOME.
-state lives in ~/.config/cycler. the day rolls over at 4am.
+state lives in ~/.config/cycler. the day rolls over at midnight.
 `
 
 func main() {

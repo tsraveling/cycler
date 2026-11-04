@@ -85,13 +85,24 @@ func (m model) handleCyclerPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd := m.passCurrent()
 		return m, cmd
 	case confirmFinish:
-		m.fin = finishFor(m.s)
-		m.s = freshState(logicalDate(nowFn()), m.c)
-		m.s.save()
-		m.carry = 0
-		m.scr = scrFinish
+		m.finishDay()
 	}
 	return m, nil
+}
+
+// ends the day by hand. with blocks the log stays, because Day Done still
+// counts from it; without them the cycler resets so the day can continue.
+func (m *model) finishDay() {
+	m.fin = finishFor(m.s)
+	if m.blocksOff() {
+		m.s = freshState(logicalDate(nowFn()), m.c)
+	} else {
+		m.s.Finished = true
+		m.s.Held = ""
+	}
+	m.s.save()
+	m.carry = 0
+	m.scr = scrFinish
 }
 
 // nothing is left to run today, so only the day-level keys are live
@@ -115,6 +126,7 @@ func (m model) canPass() bool {
 }
 
 func (m *model) advance(skipped bool) tea.Cmd {
+	m.releaseHeld()
 	m.s.advance(m.c, skipped)
 	m.carry = 0
 	m.s.save()
@@ -132,6 +144,7 @@ func (m *model) startCurrent() {
 }
 
 func (m *model) passCurrent() tea.Cmd {
+	m.releaseHeld()
 	m.s.pass(m.c)
 	m.carry = 0
 	m.s.save()
@@ -164,22 +177,14 @@ func (m model) cyclerView() string {
 	cw, ch := contentWidth(w), contentHeight(h)
 
 	help := toggledHelp(m.cyclerKeys(), m.c.HelpFull, cw)
-
-	date := m.dateLabel()
-	crumbW := max(1, cw-lipgloss.Width(date)-2)
-	crumbs := m.renderCrumbs(crumbW)
-	row0 := crumbs + spaces(cw-lipgloss.Width(crumbs)-lipgloss.Width(date)) + date
-	head := []string{row0, m.renderCounter(cw)}
+	head := append(m.cyclerHead(cw), m.renderCounter(cw))
 
 	region := blockRows(len(head), len(help), ch)
 	block := m.timerLines(cw)
 	if room := region - len(block) - 1; room > 0 {
 		text, style := m.sourceLine()
-		srcW := max(10, min(cw, w-2-16))
 		block = append(block, "")
-		for _, l := range wrapCapped(text, srcW, room) {
-			block = append(block, center(style.Render(l), cw))
-		}
+		block = append(block, sourceRows(text, style, cw, w, room)...)
 	}
 
 	return renderPanel(stackContent(head, block, help, ch), w, h, gray)
@@ -187,14 +192,30 @@ func (m model) cyclerView() string {
 
 // `p pass` only belongs in the keymap when the current item is rationed
 func (m model) cyclerKeys() []string {
-	if !m.canPass() {
-		return cyclerHelp
+	keys := slices.Clone(cyclerHelp)
+	if m.canPass() {
+		keys = slices.Insert(keys, 3, "p pass")
 	}
-	return slices.Insert(slices.Clone(cyclerHelp), 3, "p pass")
+	if m.inCyclerBlock() {
+		keys = slices.Insert(keys, len(keys)-3, "f finish block", "e extend")
+	}
+	return keys
+}
+
+// the rows above the counter: the block trail when the day has one, then the
+// cycler trail. the date rides on whichever row is on top.
+func (m model) cyclerHead(cw int) []string {
+	if !m.blocksOff() {
+		return []string{m.blockHeadRow(cw), m.renderCrumbs(cw)}
+	}
+	date := m.dateLabel()
+	crumbW := max(1, cw-lipgloss.Width(date)-2)
+	crumbs := m.renderCrumbs(crumbW)
+	return []string{crumbs + spaces(cw-lipgloss.Width(crumbs)-lipgloss.Width(date)) + date}
 }
 
 func (m model) emptyDayView() string {
-	cw := contentWidth(m.w)
+	cw, ch := contentWidth(m.w), contentHeight(m.h)
 	help := fixedHelp(emptyDayHelp, cw)
 	if m.prompt != nil {
 		help = []string{promptStyle.Render(m.prompt.prompt + " y/n")}
@@ -203,7 +224,11 @@ func (m model) emptyDayView() string {
 	for _, l := range wrapText("The cycler is empty. Enjoy your day off!", cw) {
 		body = append(body, center(greenStyle.Render(l), cw))
 	}
-	return centeredPanel(body, help, m.w, m.h, gray)
+	var head []string
+	if !m.blocksOff() {
+		head = []string{m.blockHeadRow(cw)}
+	}
+	return renderPanel(stackContent(head, body, help, ch), m.w, m.h, gray)
 }
 
 func (m model) timerLines(cw int) []string {
@@ -223,6 +248,11 @@ func (m model) sourceLine() (string, lipgloss.Style) {
 	if m.prompt != nil {
 		return m.prompt.prompt + " y/n", promptStyle
 	}
+	if m.s.Held != "" {
+		if b := m.c.blockByID(m.s.Held); b != nil {
+			return "Block ended at " + fmtClock(b.End) + " — finish to continue", redStyle
+		}
+	}
 	if m.s.Timer == timerDone {
 		if up := m.s.upcoming(m.c); up >= 0 {
 			next := m.c.Items[up]
@@ -235,18 +265,14 @@ func (m model) sourceLine() (string, lipgloss.Style) {
 	return r.text, r.style()
 }
 
-// today in gray, or the calendar date with a moon when working past midnight
-// into the previous logical day
 func (m model) dateLabel() string {
-	now := nowFn()
-	d := now.Format("Mon, Jan 2")
-	if now.Format(dateLayout) != logicalDate(now) {
-		return moonStyle.Render("☾ " + d)
-	}
-	return grayStyle.Render(d)
+	return grayStyle.Render(nowFn().Format("Mon, Jan 2"))
 }
 
-const crumbSep = " -> "
+const (
+	crumbSep = " -> "
+	blockSep = " - "
+)
 
 // the glyphs used in crumbs and the counter are East Asian Ambiguous, so each
 // crumb budgets one spare column for terminals that draw them wide
@@ -289,13 +315,13 @@ func (m model) crumbs() ([]crumb, int) {
 func crumbWidth(c crumb) int { return lipgloss.Width(c.text) + crumbSlack }
 
 // last index fully visible when rendering from off, given a column budget
-func crumbEnd(cs []crumb, off, budget int) int {
+func crumbEnd(cs []crumb, off, budget int, sep string) int {
 	w := 0
 	end := off - 1
 	for i := off; i < len(cs); i++ {
 		add := crumbWidth(cs[i])
 		if i > off {
-			add += lipgloss.Width(crumbSep)
+			add += lipgloss.Width(sep)
 		}
 		if w+add > budget {
 			break
@@ -307,12 +333,12 @@ func crumbEnd(cs []crumb, off, budget int) int {
 }
 
 // budget for a given offset, discounting the markers that will be drawn
-func crumbBudget(cs []crumb, off, width int) int {
+func crumbBudget(cs []crumb, off, width int, sep string) int {
 	budget := width
 	if off > 0 {
 		budget -= markerCols
 	}
-	if crumbEnd(cs, off, budget) < len(cs)-1 {
+	if crumbEnd(cs, off, budget, sep) < len(cs)-1 {
 		budget -= markerCols
 	}
 	return budget
@@ -320,10 +346,10 @@ func crumbBudget(cs []crumb, off, width int) int {
 
 // smallest offset that still shows the current item and the next one, so the
 // trail back-fills leftward with as much history as fits
-func autoOffset(cs []crumb, cur, width int) int {
+func autoOffset(cs []crumb, cur, width int, sep string) int {
 	need := min(cur+1, len(cs)-1)
 	for off := 0; off <= cur; off++ {
-		if crumbEnd(cs, off, crumbBudget(cs, off, width)) >= need {
+		if crumbEnd(cs, off, crumbBudget(cs, off, width, sep), sep) >= need {
 			return off
 		}
 	}
@@ -332,12 +358,17 @@ func autoOffset(cs []crumb, cur, width int) int {
 
 func (m model) renderCrumbs(width int) string {
 	cs, cur := m.crumbs()
+	return renderCrumbs(cs, cur, width, crumbSep)
+}
+
+// the shared trail renderer: windows the crumbs around cur and marks the cuts
+func renderCrumbs(cs []crumb, cur, width int, sep string) string {
 	if len(cs) == 0 {
 		return ""
 	}
-	off := autoOffset(cs, cur, width)
-	budget := crumbBudget(cs, off, width)
-	end := crumbEnd(cs, off, budget)
+	off := autoOffset(cs, cur, width, sep)
+	budget := crumbBudget(cs, off, width, sep)
+	end := crumbEnd(cs, off, budget, sep)
 
 	// nothing fits whole, so cut the one crumb to the budget rather than
 	// letting a wide label wrap out of the panel
@@ -352,7 +383,7 @@ func (m model) renderCrumbs(width int) string {
 	}
 	for i := off; i <= end; i++ {
 		if i > off {
-			sb.WriteString(grayStyle.Render(crumbSep))
+			sb.WriteString(grayStyle.Render(sep))
 		}
 		txt := cs[i].text
 		if lone {

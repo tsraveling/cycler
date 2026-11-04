@@ -14,15 +14,26 @@ var (
 		"C configure", "? help", "q quit",
 	}
 	configHelp = []string{
-		"a add", "e/enter edit", "j/k move", "J/K reorder", "d delete",
-		"esc back", "? help",
+		"a add", "o insert", "e/enter edit", "j/k move", "J/K reorder", "d delete",
+		"tab blocks", "esc back", "? help",
 	}
-	configEmptyHelp = []string{"a to add first item"}
+	configEmptyHelp = []string{"a to add first item", "tab blocks"}
+	blocksHelp      = []string{
+		"a add", "o insert", "e/enter edit", "j/k move", "d delete",
+		"tab cycler", "esc back", "? help",
+	}
+	blocksEmptyHelp = []string{"a to add first block", "tab cycler"}
 	emptyDayHelp    = []string{"c configure", "F finish day", "q quit"}
 	formHelp        = []string{
-		"tab/enter next", "shift+tab back", "h/l toggle", "space set", "esc cancel",
-		"? help",
+		"j/k move", "enter edit", "tab next", "h/l change", "space toggle",
+		"esc cancel", "? help",
 	}
+	blockHelp = []string{
+		"f finish block", "e extend", "F finish day", "C configure", "? help", "q quit",
+	}
+	doneHelp = []string{"C configure", "q quit"}
+	gapHelp  = []string{"f start next", "F finish day", "C configure", "? help", "q quit"}
+	freeHelp = []string{"C configure", "q quit"}
 )
 
 const helpSep = "   "

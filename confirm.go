@@ -13,6 +13,8 @@ const (
 	confirmFinish
 	confirmDelete
 	confirmDiscard
+	confirmBlockFinish
+	confirmStartNext
 )
 
 type confirmResult int

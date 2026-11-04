@@ -11,14 +11,20 @@ import (
 // @region app:notify -- BELL + OS NOTIFICATION
 
 // indirection so tests stay silent
-var notifyFn = notifyDone
+var (
+	notifyFn     = notifyDone
+	notifyTextFn = notifyText
+)
 
 // rings the terminal bell and fires a best-effort OS notification in the
 // background
 func notifyDone(label string) {
-	fmt.Fprint(os.Stderr, "\a")
+	notifyText(fmt.Sprintf("%s complete", label))
+}
 
-	body := fmt.Sprintf("%s complete", label)
+// rings the bell and fires a best-effort OS notification with the given body
+func notifyText(body string) {
+	fmt.Fprint(os.Stderr, "\a")
 	go func() {
 		switch runtime.GOOS {
 		case "darwin":
