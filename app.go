@@ -69,8 +69,6 @@ type model struct {
 
 	// the open extend control
 	ext *extendState
-	// block the clock was in at the last poll, for overrun detection
-	lastBlock string
 
 	f *form
 
@@ -99,7 +97,6 @@ func newModel() model {
 	m.s = s
 	m.s.save()
 	m.refreshSources()
-	m.lastBlock = m.clockBlockID()
 
 	if m.scr != scrFinish {
 		m.scr = m.homeScreen()
@@ -264,7 +261,11 @@ func (m *model) tick(now time.Time) tea.Cmd {
 	if now.Sub(m.lastPoll) >= pollEvery {
 		m.lastPoll = now
 		m.checkRollover(now)
-		m.checkBlocks(now)
+		// only while the day is on screen: an edit in progress must not trip
+		// the overrun watch against the window it is halfway through changing
+		if m.scr == scrCycler {
+			m.checkBlocks()
+		}
 		stale := now.Sub(m.srcIssued) > srcStaleAfter && m.srcPending < maxSrcPending
 		if m.srcPending == 0 || stale {
 			return m.sourcesCmd()
@@ -273,10 +274,12 @@ func (m *model) tick(now time.Time) tea.Cmd {
 	return nil
 }
 
-// a new logical day arriving mid-session ends the old one, but never under a
-// running timer or an open prompt
+// a new logical day arriving mid-session ends the old one, but never under an
+// open prompt. a running timer no longer holds it off: the day now turns at
+// midnight, so holding off would leave s.Date on yesterday while every block
+// decision resolves against today's wall clock.
 func (m *model) checkRollover(now time.Time) {
-	if m.scr != scrCycler || m.prompt != nil || m.s.Timer == timerGoing {
+	if m.scr != scrCycler || m.prompt != nil {
 		return
 	}
 	today := logicalDate(now)
@@ -289,6 +292,7 @@ func (m *model) checkRollover(now time.Time) {
 	}
 	m.s = freshState(today, m.c)
 	m.carry = 0
+	m.ext = nil
 	m.s.save()
 }
 
@@ -359,7 +363,7 @@ func (m model) mainView() string {
 	if b.Type == blkCycler {
 		return m.cyclerView()
 	}
-	return m.standardBlockView(b, idx)
+	return m.standardBlockView(b)
 }
 
 // when the free time before block idx began: the end of the last block that ran

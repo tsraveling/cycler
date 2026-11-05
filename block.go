@@ -1,8 +1,14 @@
 package main
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // @region block:resolve -- TODAY'S BLOCKS, OVERRIDES, BOUNDARIES
+
+// the ad-hoc cycler has no config entry behind it
+const openCyclerID = "open-cycler"
 
 // a block as today actually has it, after the day's drift is applied
 type resolvedBlock struct {
@@ -61,12 +67,28 @@ func (s *dayState) dayBlocks(c *config) []resolvedBlock {
 		}
 		out = append(out, r)
 	}
+	// a day with no blocks of its own can be given an open-ended cycler by
+	// hand; it runs until the day is finished or rolls over
+	if len(out) == 0 && s.OpenCycler {
+		out = append(out, resolvedBlock{
+			block: block{ID: openCyclerID, Title: "Cycler", Type: blkCycler, ActiveDays: allDays()},
+			start: s.OpenCyclerAt,
+			end:   minsPerDay,
+		})
+	}
+	// resolved order, not configured order: an override can move a block past
+	// one that was configured after it, and phase() scans forward once
+	slices.SortStableFunc(out, func(a, b resolvedBlock) int { return a.start - b.start })
 	return out
 }
 
 // moves the day's boundary to minute `at`, from fromIdx onward: a block that
 // ends at or before `at` is consumed and cancelled, and the first block
-// surviving it starts at `at`. no block's end is touched.
+// surviving it is pushed to start at `at`.
+//
+// it pushes but never pulls. a block that was already due to start later keeps
+// its own start, and the time before it becomes free — a gap behaves like a
+// pseudo-block, so finishing early can never swallow one.
 func (s *dayState) cascadeFrom(c *config, fromIdx, at int) {
 	bs := s.dayBlocks(c)
 	for i := fromIdx; i < len(bs); i++ {
@@ -78,11 +100,21 @@ func (s *dayState) cascadeFrom(c *config, fromIdx, at int) {
 			s.setOverride(b.ID, func(o *blockOverride) { o.Cancelled = true })
 			continue
 		}
-		// unconditional: the boundary pulls a block forward as readily as it
-		// pushes one back
-		s.setOverride(b.ID, func(o *blockOverride) { o.Start = at })
+		if at > b.start {
+			s.setOverride(b.ID, func(o *blockOverride) { o.Start = at })
+		}
 		return
 	}
+}
+
+// pulls one block back to start at `at`. the deliberate opposite of the push
+// above, and the only way a block ever starts before it was scheduled to.
+func (s *dayState) startBlockAt(c *config, idx, at int) {
+	bs := s.dayBlocks(c)
+	if idx < 0 || idx >= len(bs) || at >= bs[idx].start {
+		return
+	}
+	s.setOverride(bs[idx].ID, func(o *blockOverride) { o.Start = at })
 }
 
 // ends block idx at `at` and cascades into what follows. the one mutation
@@ -182,14 +214,6 @@ func (m model) phase() (dayPhase, resolvedBlock, int) {
 		last = i
 	}
 	return phaseDone, bs[last], last
-}
-
-// the crumb the trail scrolls to keep in view
-func phaseAnchor(ph dayPhase, idx int) int {
-	if idx < 0 {
-		return 0
-	}
-	return idx
 }
 
 // is this phase showing the cycler rather than a clock

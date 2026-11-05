@@ -36,6 +36,7 @@ func (m model) updateCycler(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case timerIdle, timerPaused:
 			m.s.Timer = timerGoing
 			m.carry = 0
+			m.markRunningBlock()
 			m.s.save()
 		case timerGoing:
 			m.s.Timer = timerPaused
@@ -99,6 +100,11 @@ func (m *model) finishDay() {
 	} else {
 		m.s.Finished = true
 		m.s.Held = ""
+		// the cycler is off screen for the rest of the day, so its timer must
+		// not keep counting down to a notification nothing can answer
+		if m.s.Timer == timerGoing {
+			m.s.Timer = timerPaused
+		}
 	}
 	m.s.save()
 	m.carry = 0
@@ -133,13 +139,20 @@ func (m *model) advance(skipped bool) tea.Cmd {
 	return m.sourcesCmd()
 }
 
-// runs the item the cycle now points at, if there is one
+// runs the item the cycle now points at, if there is one and the cycler is
+// still on screen. completing an item can release a held block and hand the
+// day to a standard one, and a timer started under that counts down invisibly
+// to a notification nothing can answer.
 func (m *model) startCurrent() {
 	if m.s.Current == "" || m.s.Timer != timerIdle {
 		return
 	}
+	if !m.blocksOff() && !m.inCyclerBlock() {
+		return
+	}
 	m.s.Timer = timerGoing
 	m.carry = 0
+	m.markRunningBlock()
 	m.s.save()
 }
 
@@ -180,11 +193,36 @@ func (m model) cyclerView() string {
 	head := append(m.cyclerHead(cw), m.renderCounter(cw))
 
 	region := blockRows(len(head), len(help), ch)
-	block := m.timerLines(cw)
-	if room := region - len(block) - 1; room > 0 {
+	art := m.timerLines(cw)
+
+	// an open prompt or extend control has to be on screen before the timer
+	// art does, because a keypress is about to answer it
+	mandatory := m.ext != nil || m.prompt != nil
+	status := func(rows int) []string {
+		if rows < 1 {
+			return nil
+		}
+		if m.ext != nil {
+			return m.extendRows(cw, rows)
+		}
 		text, style := m.sourceLine()
-		block = append(block, "")
-		block = append(block, sourceRows(text, style, cw, w, room)...)
+		return sourceRows(text, style, cw, w, rows)
+	}
+
+	var block []string
+	if room := region - len(art) - 1; room > 0 {
+		if rows := status(room); len(rows) > 0 {
+			block = append(append(slices.Clone(art), ""), rows...)
+		} else {
+			block = art
+		}
+	}
+	if len(block) == 0 {
+		if mandatory {
+			block = status(region)
+		} else {
+			block = art
+		}
 	}
 
 	return renderPanel(stackContent(head, block, help, ch), w, h, gray)
@@ -224,6 +262,10 @@ func (m model) emptyDayView() string {
 	for _, l := range wrapText("The cycler is empty. Enjoy your day off!", cw) {
 		body = append(body, center(greenStyle.Render(l), cw))
 	}
+	if rows := m.extendRows(cw, 2); len(rows) > 0 {
+		body = append(body, "")
+		body = append(body, rows...)
+	}
 	var head []string
 	if !m.blocksOff() {
 		head = []string{m.blockHeadRow(cw)}
@@ -249,8 +291,11 @@ func (m model) sourceLine() (string, lipgloss.Style) {
 		return m.prompt.prompt + " y/n", promptStyle
 	}
 	if m.s.Held != "" {
-		if b := m.c.blockByID(m.s.Held); b != nil {
-			return "Block ended at " + fmtClock(b.End) + " — finish to continue", redStyle
+		// today's end, which an earlier extend or cascade may have moved
+		for _, b := range m.s.dayBlocks(m.c) {
+			if b.ID == m.s.Held {
+				return "Block ended at " + fmtClock(b.end) + " — finish to continue", redStyle
+			}
 		}
 	}
 	if m.s.Timer == timerDone {

@@ -150,7 +150,9 @@ func TestExtendCancelsAndCuts(t *testing.T) {
 	}
 }
 
-func TestFinishEarlyOnlyMovesTheNextStart(t *testing.T) {
+// finishing early ends the block and opens free time; it never drags the next
+// block back, so a configured gap can't be swallowed
+func TestFinishEarlyOpensFreeTime(t *testing.T) {
 	setClock := setup(t)
 	setClock(at(11, 30))
 	m := withBlocks(t,
@@ -160,11 +162,38 @@ func TestFinishEarlyOnlyMovesTheNextStart(t *testing.T) {
 	m.s.endBlockAt(m.c, 0, hm(11, 30))
 
 	bs := m.s.dayBlocks(m.c)
-	if bs[1].start != hm(11, 30) || bs[1].end != hm(12, 30) {
-		t.Fatalf("B should start early and keep its end: %+v", bs[1])
+	if bs[0].end != hm(11, 30) {
+		t.Fatalf("A should end now: %+v", bs[0])
 	}
-	if bs[1].cancelled {
-		t.Fatal("B should not be cancelled")
+	if bs[1].start != hm(12, 0) || bs[1].end != hm(12, 30) {
+		t.Fatalf("B should be untouched: %+v", bs[1])
+	}
+	if ph, _, _ := m.phase(); ph != phaseGap {
+		t.Fatalf("the time between them is free, got phase %d", ph)
+	}
+}
+
+// a long lunch between two blocks survives finishing the morning early
+func TestFinishEarlyKeepsAConfiguredGap(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 0))
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(12, 0)},
+		block{Title: "Afternoon", Start: hm(14, 0), End: hm(18, 0)},
+	)
+	m = send(m, "f", "y")
+
+	bs := m.s.dayBlocks(m.c)
+	if bs[1].start != hm(14, 0) || bs[1].end != hm(18, 0) {
+		t.Fatalf("the lunch gap must survive: %+v", bs[1])
+	}
+	if ph, b, _ := m.phase(); ph != phaseGap || b.Title != "Afternoon" {
+		t.Fatalf("want free time until Afternoon, got %d %q", ph, b.Title)
+	}
+	// and the gap can still be cut short deliberately
+	m = send(m, "f", "y")
+	if bs := m.s.dayBlocks(m.c); bs[1].start != hm(11, 0) {
+		t.Fatalf("f from the gap should pull Afternoon forward: %+v", bs[1])
 	}
 }
 
@@ -547,11 +576,11 @@ func TestFinishBlockEarlyAndFinishDay(t *testing.T) {
 	}
 	m = send(m, "y")
 	bs := m.s.dayBlocks(m.c)
-	if bs[0].end != hm(11, 30) || bs[1].start != hm(11, 30) {
-		t.Fatalf("finishing early should move the boundary: %+v", bs)
+	if bs[0].end != hm(11, 30) || bs[1].start != hm(12, 0) {
+		t.Fatalf("A ends now and B keeps its start: %+v", bs)
 	}
-	if ph, b, _ := m.phase(); ph != phaseBlock || b.Title != "B" {
-		t.Fatalf("B should be running, got %d %q", ph, b.Title)
+	if ph, b, _ := m.phase(); ph != phaseGap || b.Title != "B" {
+		t.Fatalf("free time until B, got %d %q", ph, b.Title)
 	}
 
 	// F ends the whole day in place, keeping the log for the Day Done count
@@ -728,5 +757,967 @@ func TestEndTimeWarnsInFinalStretch(t *testing.T) {
 		if got := inFinalStretch(c.now, end); got != c.want {
 			t.Errorf("%s: want %v, got %v", fmtClock(c.now), c.want, got)
 		}
+	}
+}
+
+// a prompt or control answered after the clock has moved on must act on the
+// block it named, not on whatever became current in the meantime
+func TestLatePromptActsOnTheNamedBlock(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 59))
+	m := withBlocks(t,
+		block{Title: "A", Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "B", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, "f")
+	if m.prompt == nil || !strings.Contains(m.prompt.prompt, "Finish A early?") {
+		t.Fatalf("want the prompt against A, got %+v", m.prompt)
+	}
+	setClock(at(12, 0))
+	m = send(m, "y")
+
+	bs := m.s.dayBlocks(m.c)
+	if bs[1].cancelled {
+		t.Fatal("answering late must not destroy B")
+	}
+	if bs[0].end != hm(12, 0) {
+		t.Fatalf("A ran out on its own, so it is finished rather than stretched: %+v", bs[0])
+	}
+}
+
+// adjacent blocks hand over with no gap between them, so a control left open
+// across the boundary must not resurrect the block that just ended — nor, which
+// is worse, quietly extend the one that replaced it
+func TestExtendDiesWhenItsBlockHandsOver(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 59))
+	m := withBlocks(t,
+		block{Title: "A", Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "B", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, "e") // opens on A at 10m
+	setClock(at(12, 0))
+	m = send(m, "enter")
+
+	if m.ext != nil {
+		t.Fatal("the control should have died with A")
+	}
+	bs := m.s.dayBlocks(m.c)
+	if bs[0].end != hm(12, 0) {
+		t.Fatalf("A ended on its own and must not be resurrected: %+v", bs[0])
+	}
+	if bs[1].start != hm(12, 0) || bs[1].end != hm(13, 0) {
+		t.Fatalf("B must be left exactly as it was: %+v", bs[1])
+	}
+	if ph, b, _ := m.phase(); ph != phaseBlock || b.Title != "B" {
+		t.Fatalf("B should be running, got %d %q", ph, b.Title)
+	}
+}
+
+func TestExtendIsVisibleInACyclerBlock(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(12, 15)},
+	)
+	m = send(m, "e")
+	if m.ext == nil {
+		t.Fatal("e should open the control in a cycler block")
+	}
+	if v := m.View(); !strings.Contains(v, "Extend by") {
+		t.Fatalf("the control must be visible, not a hidden modal:\n%s", v)
+	}
+	m = send(m, "l", "l") // 20m, which swallows After
+	if v := m.View(); !strings.Contains(v, "Will cancel After") {
+		t.Fatalf("the warning must be visible too:\n%s", v)
+	}
+	m = send(m, "esc")
+	if m.ext != nil {
+		t.Fatal("esc should close it")
+	}
+}
+
+// a cycler prompt raised inside a block must still be answerable once the
+// block's clock end has passed
+func TestCyclerPromptSurvivesABlockEnding(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 59))
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, "c")
+	if m.prompt == nil || m.prompt.kind != confirmComplete {
+		t.Fatalf("want the complete prompt, got %+v", m.prompt)
+	}
+	setClock(at(12, 0))
+	m = send(m, "y")
+	if len(m.s.Log) != 1 {
+		t.Fatalf("the answer must not be swallowed: %+v", m.s.Log)
+	}
+}
+
+func TestReEnteringATimeFieldStartsOnTheHour(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	m := withBlocks(t, block{Title: "A", Start: hm(11, 0), End: hm(12, 0)})
+	m = send(m, "C", "tab", "e")
+	m = editField(m, fEnd)
+	m = send(m, "enter") // to the minute cell
+	if m.f.cell != 1 {
+		t.Fatalf("setup: want the minute cell, got %d", m.f.cell)
+	}
+	m = send(m, "enter") // commits the line
+	if m.f.editing {
+		t.Fatal("setup: should have left edit mode")
+	}
+	m = send(m, "enter") // back in
+	if m.f.cell != 0 {
+		t.Fatalf("re-entering should land on the hour, got cell %d", m.f.cell)
+	}
+}
+
+func TestInvalidTimeSaveSaysWhy(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	m := withBlocks(t, block{Title: "A", Start: hm(11, 0), End: hm(12, 0)})
+	m = send(m, "C", "tab", "e")
+	m = editField(m, fEnd)
+	m = send(m, "backspace", "backspace")
+	m = saveFormKeys(m)
+	if m.scr != scrForm {
+		t.Fatal("save should not have gone through")
+	}
+	if m.f.err == "" {
+		t.Fatal("a refused save should say why rather than doing nothing")
+	}
+}
+
+func TestRolloverClosesAnOpenControl(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	m := withBlocks(t, block{Title: "A", Start: hm(11, 0), End: hm(12, 0)})
+	m = send(m, "e")
+	if m.ext == nil {
+		t.Fatal("setup: want an open control")
+	}
+	// the poll reads the tick's own time, so the tick has to carry the new day
+	next := time.Date(2026, 10, 22, 11, 30, 0, 0, time.Local)
+	setClock(next)
+	m.lastTick = next.Add(-time.Second)
+	m.lastPoll = next.Add(-pollEvery - time.Second)
+	upd, _ := m.Update(tickMsg(next))
+	m = upd.(model)
+	if m.s.Date != logicalDate(next) {
+		t.Fatalf("setup: the day should have rolled, got %q", m.s.Date)
+	}
+	if m.ext != nil {
+		t.Fatal("a new day should not leave a control open against yesterday")
+	}
+}
+
+// finishing a cycler block by hand must not let the overrun watch grab it back
+func TestFinishingACyclerBlockDoesNotReHold(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	var notes []string
+	notifyTextFn = func(s string) { notes = append(notes, s) }
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, " ") // timer running
+	m = send(m, "f", "y")
+	if m.s.Held != "" {
+		t.Fatal("finishing early should not hold")
+	}
+
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held != "" {
+		t.Fatalf("the poll must not re-hold a block that was finished by hand")
+	}
+	if len(notes) != 0 {
+		t.Fatalf("and must not notify about it: %v", notes)
+	}
+	if ph, b, _ := m.phase(); ph != phaseGap || b.Title != "After" {
+		t.Fatalf("free time until After, got %d %q", ph, b.Title)
+	}
+}
+
+// extending a held block gives it more time, so it is no longer overrunning
+func TestExtendingAHeldBlockReleasesIt(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	notifyTextFn = func(string) {}
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, " ")
+	setClock(at(12, 10))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("setup: want a held block")
+	}
+
+	// a held block is already past its end, so the step is measured from now:
+	// one step right is 20m, giving 12:10 + 20m
+	m = send(m, "e", "l", "enter")
+	if m.s.Held != "" {
+		t.Fatal("an extension past now means the block is running again")
+	}
+	if bs := m.s.dayBlocks(m.c); bs[0].end != hm(12, 30) {
+		t.Fatalf("want an end of 12:30, got %+v", bs[0])
+	}
+	if !strings.Contains(m.View(), "task text") {
+		t.Fatalf("the overrun banner should be gone:\n%s", m.View())
+	}
+}
+
+func TestHeldBannerShowsTodaysEnd(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	notifyTextFn = func(string) {}
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	// push the end out to 12:30, then overrun that
+	m = send(m, " ", "e", "l", "l", "enter")
+	if bs := m.s.dayBlocks(m.c); bs[0].end != hm(12, 30) {
+		t.Fatalf("setup: want 12:30, got %+v", bs[0])
+	}
+	setClock(at(12, 40))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("setup: want a held block")
+	}
+	v := m.View()
+	if !strings.Contains(v, "Block ended at 12:30") {
+		t.Fatalf("the banner should report today's end, not the configured one:\n%s", v)
+	}
+}
+
+func TestSleepRendersItsPrompt(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(7, 0))
+	m := withBlocks(t, block{Title: "A", Start: hm(9, 0), End: hm(10, 0)})
+	if ph, _, _ := m.phase(); ph != phaseSleep {
+		t.Fatalf("want sleep, got %d", ph)
+	}
+	m = send(m, "F")
+	if m.prompt == nil {
+		t.Fatal("setup: want a prompt")
+	}
+	if v := m.View(); !strings.Contains(v, "Finish day?") {
+		t.Fatalf("an open prompt must be visible before it can be answered:\n%s", v)
+	}
+}
+
+func TestFinishDayStopsTheCyclerTimer(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	fired := 0
+	notifyFn = func(string) { fired++ }
+	t.Cleanup(func() { notifyFn = notifyDone })
+
+	m := withBlocks(t, block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)})
+	m = send(m, " ")
+	if m.s.Timer != timerGoing {
+		t.Fatal("setup: want a running timer")
+	}
+	m = send(m, "F", "y")
+	if m.s.Timer == timerGoing {
+		t.Fatal("finishing the day should stop the timer")
+	}
+	m = send(m, " ") // dismiss the finish screen
+	m = runClock(m, 65)
+	if fired != 0 {
+		t.Fatalf("a finished day must not fire a completion notification, got %d", fired)
+	}
+}
+
+func TestExtendControlDiesWithItsBlock(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 59))
+	m := withBlocks(t,
+		block{Title: "A", Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "B", Start: hm(13, 0), End: hm(14, 0)},
+	)
+	m = send(m, "e")
+	if m.ext == nil {
+		t.Fatal("setup: want an open control")
+	}
+
+	// the block ends while the control is open, so the day moves into the gap
+	setClock(at(12, 1))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.ext != nil {
+		t.Fatal("the control should not outlive its block")
+	}
+	if ph, _, _ := m.phase(); ph != phaseGap {
+		t.Fatalf("want a gap, got %d", ph)
+	}
+	// and the gap's own keys work rather than being swallowed
+	m = send(m, "f")
+	if m.prompt == nil {
+		t.Fatal("f should work once the control is gone")
+	}
+}
+
+func TestExtendIsVisibleOnAnEmptyCycler(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	c := &config{}
+	c.Items = append(c.Items, item{
+		ID: newID(), Name: "Off today", Seconds: 60, ActiveDays: []int{},
+		Source: srcStatic, SourceConfig: "x",
+	})
+	c.Blocks = append(c.Blocks, block{
+		ID: newID(), Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0),
+		ActiveDays: allDays(), Color: defaultBlockColor, Source: srcStatic,
+	})
+	c.save()
+	m := newModel()
+	if m.s.Current != "" {
+		t.Fatal("setup: want an empty cycler")
+	}
+	m = send(m, "e")
+	if v := m.View(); !strings.Contains(v, "Extend by") {
+		t.Fatalf("the control must be visible here too:\n%s", v)
+	}
+}
+
+func TestDayDoneRendersItsPrompt(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 58))
+	m := withBlocks(t, block{Title: "A", Start: hm(9, 0), End: hm(10, 0)})
+	m = send(m, "F")
+	if m.prompt == nil {
+		t.Fatal("setup: want a prompt")
+	}
+	setClock(at(10, 1))
+	if ph, _, _ := m.phase(); ph != phaseDone {
+		t.Fatalf("want day done, got %d", ph)
+	}
+	if v := m.View(); !strings.Contains(v, "Finish day?") {
+		t.Fatalf("a live prompt must stay visible across a phase change:\n%s", v)
+	}
+}
+
+func TestFinishingACyclerBlockPausesItsTimer(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	fired := 0
+	notifyFn = func(string) { fired++ }
+	t.Cleanup(func() { notifyFn = notifyDone })
+
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, " ")
+	m = send(m, "f", "y")
+	if m.s.Timer == timerGoing {
+		t.Fatal("taking the cycler off screen should stop its timer")
+	}
+	m = runClock(m, 65)
+	if fired != 0 {
+		t.Fatalf("no notification should fire with the cycler off screen, got %d", fired)
+	}
+}
+
+func TestEditingAHeldBlockOffTodayClearsTheHold(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	notifyTextFn = func(string) {}
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t, block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)})
+	m = send(m, " ")
+	setClock(at(12, 10))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("setup: want a held block")
+	}
+
+	// take it off today's schedule entirely
+	m = send(m, "C", "tab", "e")
+	m = toField(m, fDays)
+	m = send(m, "right", "right")
+	for range 7 {
+		m = send(m, " ", "right")
+	}
+	m = saveFormKeys(m)
+	if m.scr != scrConfig {
+		t.Fatalf("save failed: %+v", m.f)
+	}
+	if m.s.Held != "" {
+		t.Fatal("a block that no longer runs today cannot stay held")
+	}
+}
+
+func TestExtendWarningSurvivesAShortPanel(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	m := withBlocks(t,
+		block{Title: "A", Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "B", Start: hm(12, 0), End: hm(12, 15)},
+	)
+	m = send(m, "e", "l") // 20m, which swallows B
+	if rows := m.extendRows(contentWidth(80), 2); len(rows) != 2 {
+		t.Fatalf("with room for two, the warning gets its own row: %d", len(rows))
+	}
+	rows := m.extendRows(contentWidth(80), 1)
+	if len(rows) != 1 {
+		t.Fatalf("want one row, got %d", len(rows))
+	}
+	if !strings.Contains(rows[0], "Will cancel B") {
+		t.Fatalf("a destructive step must warn even when the panel is short: %q", rows[0])
+	}
+}
+
+// a prompt the next keypress will answer has to be legible at every size the
+// app claims to support, even when the clock art has to go to make room
+func TestPromptsAndControlsSurviveMinimumSize(t *testing.T) {
+	setClock := setup(t)
+	m := withBlocks(t,
+		block{Title: "Focused Reading", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Short", Start: hm(10, 0), End: hm(10, 20)},
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+	)
+	sizes := [][2]int{{34, 12}, {50, 16}, {80, 24}}
+
+	cases := []struct {
+		name string
+		at   time.Time
+		keys []string
+		want string
+	}{
+		{"block finish prompt", at(9, 30), []string{"f"}, "Finish Focused"},
+		{"block extend control", at(9, 30), []string{"e"}, "Extend by"},
+		{"extend warning", at(9, 30), []string{"e", "l", "l"}, "Will cancel Short"},
+		{"finish day prompt", at(9, 30), []string{"F"}, "Finish day?"},
+		{"gap prompt", at(10, 30), []string{"f"}, "Start Cycle"},
+		{"sleep prompt", at(8, 0), []string{"F"}, "Finish day?"},
+		{"cycler extend", at(11, 30), []string{"e"}, "Extend by"},
+		{"cycler prompt", at(11, 30), []string{"c"}, "Complete early?"},
+		{"skip prompt", at(11, 30), []string{"s"}, "Skip item?"},
+	}
+
+	for _, c := range cases {
+		setClock(c.at)
+		for _, sz := range sizes {
+			s := m
+			s.w, s.h = sz[0], sz[1]
+			s = send(s, c.keys...)
+			v := s.View()
+			if !strings.Contains(v, c.want) {
+				t.Errorf("%s at %v: %q is not on screen:\n%s", c.name, sz, c.want, v)
+			}
+			for i, l := range strings.Split(v, "\n") {
+				if lipgloss.Width(l) > sz[0] {
+					t.Errorf("%s at %v: line %d is %d wide", c.name, sz, i, lipgloss.Width(l))
+				}
+			}
+		}
+	}
+}
+
+func TestEditingABlockWindowDoesNotFakeAnOverrun(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 45))
+	var notes []string
+	notifyTextFn = func(s string) { notes = append(notes, s) }
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t, block{Title: "Cycle", Type: blkCycler, Start: hm(10, 0), End: hm(11, 0)})
+	m = send(m, " ") // timer running inside the block
+
+	// push the window later; the block has not ended, it has moved
+	m = send(m, "C", "tab", "e")
+	m = editField(m, fStart)
+	m = send(m, "backspace", "backspace")
+	m = typeText(m, "11")
+	m = send(m, "tab", "backspace", "backspace")
+	m = typeText(m, "00")
+	m = toField(m, fEnd)
+	m = send(m, "enter", "backspace", "backspace")
+	m = typeText(m, "12")
+	m = saveFormKeys(m)
+	if m.scr != scrConfig {
+		t.Fatalf("save failed: %+v", m.f)
+	}
+	m = send(m, "esc")
+
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held != "" {
+		t.Fatal("a window that moved is not a block that ended")
+	}
+	if len(notes) != 0 {
+		t.Fatalf("and must not notify: %v", notes)
+	}
+}
+
+// the day now turns at midnight, which is exactly when a timer is most likely
+// to be mid-run; holding the roll off would leave every block decision
+// resolving against yesterday
+func TestMidnightRollsOverUnderARunningTimer(t *testing.T) {
+	setClock := setup(t)
+	setClock(time.Date(2026, 10, 21, 23, 59, 0, 0, time.Local))
+	m := withItems(t, "A")
+	m = send(m, " ")
+	if m.s.Timer != timerGoing {
+		t.Fatal("setup: want a running timer")
+	}
+
+	next := time.Date(2026, 10, 22, 0, 1, 0, 0, time.Local)
+	setClock(next)
+	m.lastTick = next.Add(-time.Second)
+	m.lastPoll = next.Add(-pollEvery - time.Second)
+	upd, _ := m.Update(tickMsg(next))
+	m = upd.(model)
+
+	if m.s.Date != logicalDate(next) {
+		t.Fatalf("a running timer must not hold the day on yesterday: %q", m.s.Date)
+	}
+	if m.s.Timer == timerGoing {
+		t.Fatal("the new day starts with a fresh, unstarted timer")
+	}
+}
+
+func TestOverrunWatchIsQuietWhileConfiguring(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 45))
+	var notes []string
+	notifyTextFn = func(s string) { notes = append(notes, s) }
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t, block{Title: "Cycle", Type: blkCycler, Start: hm(10, 0), End: hm(11, 0)})
+	m = send(m, " ")
+	m = send(m, "C", "tab", "e") // sitting in the block form
+
+	// the window the user is halfway through editing lapses under them
+	setClock(at(11, 5))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+
+	if m.s.Held != "" {
+		t.Fatal("an edit in progress must not trip the overrun watch")
+	}
+	if len(notes) != 0 {
+		t.Fatalf("and must not notify mid-edit: %v", notes)
+	}
+}
+
+func TestExtendStepperShowsTheEffectiveStep(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(23, 30))
+	m := withBlocks(t, block{
+		Title: "Late", Start: hm(23, 0), End: hm(23, 50),
+		ActiveDays: allDays(),
+	})
+	m = send(m, "e")
+	for range len(extendSteps) {
+		m = send(m, "l")
+	}
+	// 23:50 + 2h clamps to 23:59, which is nine minutes, not two hours
+	rows := m.extendRows(contentWidth(80), 2)
+	if len(rows) == 0 || !strings.Contains(rows[0], "9m") {
+		t.Fatalf("the stepper should show what the commit will actually do: %q", rows)
+	}
+	if strings.Contains(rows[0], "2h") {
+		t.Fatalf("and not a step it cannot take: %q", rows[0])
+	}
+	m = send(m, "enter")
+	if bs := m.s.dayBlocks(m.c); bs[0].end != minsPerDay-1 {
+		t.Fatalf("want a clamped end, got %+v", bs[0])
+	}
+}
+
+// an overrun must survive a config visit that spans the block's end: the old
+// transition detector lost the evidence and left the timer counting down with
+// nothing on screen to answer it
+func TestOverrunSurvivesAConfigVisit(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 56))
+	var notes []string
+	notifyTextFn = func(s string) { notes = append(notes, s) }
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t,
+		block{Title: "Deep Work", Type: blkCycler, Start: hm(9, 0), End: hm(11, 0)},
+		block{Title: "Lunch", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	m = send(m, " ")
+	m = send(m, "C") // just looking
+	setClock(at(11, 2))
+	m = send(m, "esc")
+
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("the overrun must still be detected after a config visit")
+	}
+	if len(notes) != 1 {
+		t.Fatalf("want one notification, got %v", notes)
+	}
+	if ph, b, _ := m.phase(); ph != phaseBlock || b.Title != "Deep Work" {
+		t.Fatalf("the held block should be current, got %d %q", ph, b.Title)
+	}
+}
+
+func TestOverrunSurvivesARestart(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 56))
+	notifyTextFn = func(string) {}
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t,
+		block{Title: "Deep Work", Type: blkCycler, Start: hm(9, 0), End: hm(11, 0)},
+		block{Title: "Lunch", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	m = send(m, " ")
+	if m.s.Running == "" {
+		t.Fatal("setup: the running block should be recorded")
+	}
+	qm, _ := m.quit()
+	m = qm.(model)
+
+	setClock(at(11, 2))
+	m = newModel()
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("a restart across the boundary must not lose the overrun")
+	}
+}
+
+// resolved windows, not configured ones, decide what is running
+func TestResolvedBlocksStayInOrder(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 30))
+	m := withBlocks(t,
+		block{Title: "A", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "B", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	// pull B back into the gap, so its resolved start is 10:30
+	m = send(m, "f", "y")
+	if bs := m.s.dayBlocks(m.c); bs[1].start != hm(10, 30) {
+		t.Fatalf("setup: want B at 10:30, got %+v", bs[1])
+	}
+
+	// now move A late. the overlap check passes, because it compares against
+	// B's configured 11:00 rather than the 10:30 it actually has today.
+	m = send(m, "C", "tab", "e")
+	m = editField(m, fStart)
+	m = send(m, "backspace", "backspace")
+	m = typeText(m, "10")
+	m = send(m, "tab", "backspace", "backspace")
+	m = typeText(m, "45")
+	m = toField(m, fEnd)
+	m = send(m, "enter", "backspace", "backspace")
+	m = typeText(m, "10")
+	m = send(m, "tab", "backspace", "backspace")
+	m = typeText(m, "50")
+	m = saveFormKeys(m)
+	if m.scr != scrConfig {
+		t.Fatalf("save failed: %+v", m.f)
+	}
+	m = send(m, "esc")
+
+	bs := m.s.dayBlocks(m.c)
+	for i := 1; i < len(bs); i++ {
+		if bs[i].start < bs[i-1].start {
+			t.Fatalf("resolved blocks must be in start order: %+v", bs)
+		}
+	}
+	setClock(at(10, 40))
+	if ph, b, _ := m.phase(); ph != phaseBlock || b.Title != "B" {
+		t.Fatalf("B is running at 10:40, got phase %d %q", ph, b.Title)
+	}
+}
+
+func TestNewBlockFormDoesNotCryInvalid(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	m := withBlocks(t, block{Title: "A", Start: hm(11, 0), End: hm(12, 0)})
+	m = send(m, "C", "tab", "a")
+	if v := m.View(); strings.Contains(v, "Invalid!") {
+		t.Fatalf("an untouched field is not an error yet:\n%s", v)
+	}
+	if m.f.saveReady() {
+		t.Fatal("but it still blocks the save")
+	}
+	// typing something unreadable does flag it
+	m = editField(m, fStart)
+	m = typeText(m, "99")
+	m = send(m, "esc")
+	if !strings.Contains(m.View(), "Invalid!") {
+		t.Fatalf("a filled-in bad time should flag:\n%s", m.View())
+	}
+}
+
+// completing a held item hands the day to the next block; the cycler goes off
+// screen with it, so nothing may start counting down under the new one
+func TestReleasingAHoldDoesNotStartAnInvisibleTimer(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	fired := 0
+	notifyFn = func(string) { fired++ }
+	notifyTextFn = func(string) {}
+	t.Cleanup(func() { notifyFn = notifyDone; notifyTextFn = notifyText })
+
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, " ")
+	setClock(at(12, 10))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("setup: want a held block")
+	}
+
+	// let the timer finish, then space through it
+	m.s.Remaining = 1
+	m = runClock(m, 2)
+	if m.s.Timer != timerDone {
+		t.Fatalf("setup: want a finished timer, got %q", m.s.Timer)
+	}
+	fired = 0
+	m = send(m, " ")
+
+	if ph, b, _ := m.phase(); ph != phaseBlock || b.Title != "After" {
+		t.Fatalf("the day should have moved on, got %d %q", ph, b.Title)
+	}
+	if m.s.Timer == timerGoing {
+		t.Fatal("the cycler is off screen, so its timer must not be running")
+	}
+	m = runClock(m, 120)
+	if fired != 0 {
+		t.Fatalf("and must not fire a notification nothing can answer, got %d", fired)
+	}
+}
+
+// a hold is for work in progress; if the work goes away the hold must too,
+// or the day wedges on a block that already ended
+func TestHoldDiesWithItsItem(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	notifyTextFn = func(string) {}
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t,
+		block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)},
+		block{Title: "After", Start: hm(12, 0), End: hm(13, 0)},
+	)
+	m = send(m, " ")
+	setClock(at(12, 10))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("setup: want a held block")
+	}
+
+	// schedule the running item out of today, which leaves no current item
+	m = send(m, "C", "e")
+	m = toField(m, fDays)
+	m = send(m, "right", "right")
+	for range 7 {
+		m = send(m, " ", "right")
+	}
+	m = saveFormKeys(m)
+	m = send(m, "esc")
+	if m.s.Current != "" {
+		t.Fatalf("setup: want an empty cycler, got %q", m.s.Current)
+	}
+
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held != "" {
+		t.Fatal("a hold must not outlive the work it was holding for")
+	}
+	if ph, b, _ := m.phase(); ph != phaseBlock || b.Title != "After" {
+		t.Fatalf("the day should resume, got %d %q", ph, b.Title)
+	}
+}
+
+func TestASecondOverrunStillNotifies(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	var notes []string
+	notifyTextFn = func(s string) { notes = append(notes, s) }
+	t.Cleanup(func() { notifyTextFn = notifyText })
+
+	m := withBlocks(t, block{Title: "Cycle", Type: blkCycler, Start: hm(11, 0), End: hm(12, 0)})
+	m = send(m, " ")
+	setClock(at(12, 10))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if len(notes) != 1 {
+		t.Fatalf("want the first notification, got %v", notes)
+	}
+
+	// buy twenty more minutes, then run past those too
+	m = send(m, "e", "l", "enter")
+	if m.s.Held != "" {
+		t.Fatal("setup: the extension should have released the hold")
+	}
+	setClock(at(12, 40))
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	m = runClock(m, 1)
+	if m.s.Held == "" {
+		t.Fatal("setup: want a second hold")
+	}
+	if len(notes) != 2 {
+		t.Fatalf("a second overrun is news too, got %v", notes)
+	}
+}
+
+func TestStaleFormErrorClearsOnNavigation(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(11, 30))
+	m := withBlocks(t,
+		block{Title: "A", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "B", Start: hm(10, 0), End: hm(11, 0)},
+	)
+	// edit A to collide with B
+	m = send(m, "C", "tab", "e")
+	m = editField(m, fEnd)
+	m = send(m, "backspace", "backspace")
+	m = typeText(m, "10")
+	m = send(m, "tab", "backspace", "backspace")
+	m = typeText(m, "30")
+	m = saveFormKeys(m)
+	if m.f == nil || m.f.err == "" {
+		t.Fatal("setup: want an overlap error")
+	}
+	m = send(m, "j")
+	if m.f.err != "" {
+		t.Fatalf("a refusal should not linger once the user moves on: %q", m.f.err)
+	}
+}
+
+// a day whose blocks all belong to other weekdays is free time, but the cycler
+// can still be started by hand and runs open-ended until F or midnight
+func TestOpenCyclerOnABlocklessDay(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 0)) // 2026-10-21 is a Wednesday
+	m := withBlocks(t, block{
+		Title: "Sunday only", Start: hm(9, 0), End: hm(10, 30),
+		ActiveDays: []int{int(time.Sunday)},
+	})
+	if ph, _, _ := m.phase(); ph != phaseNoBlocks {
+		t.Fatalf("want a blockless day, got %d", ph)
+	}
+	if !strings.Contains(m.View(), "FREE TIME") {
+		t.Fatal("setup: want free time")
+	}
+
+	m = send(m, "c")
+	ph, b, _ := m.phase()
+	if ph != phaseBlock || b.Type != blkCycler {
+		t.Fatalf("c should open a cycler block, got %d %+v", ph, b)
+	}
+	if b.start != hm(10, 0) {
+		t.Fatalf("it should mark the time it started: %+v", b)
+	}
+	if b.end != minsPerDay {
+		t.Fatalf("and have no scheduled end: %+v", b)
+	}
+	if v := m.View(); !strings.Contains(v, "task text") {
+		t.Fatalf("the cycler should be on screen:\n%s", v)
+	}
+
+	// it runs the whole day without ever overrunning
+	setClock(at(23, 30))
+	if ph, _, _ := m.phase(); ph != phaseBlock {
+		t.Fatalf("it should still be running at 23:30, got %d", ph)
+	}
+	// the cycler's own keys work inside it
+	m = send(m, " ")
+	if m.s.Timer != timerGoing {
+		t.Fatal("space should start the timer")
+	}
+	// and F still ends the day
+	m = send(m, "F", "y")
+	if !m.s.Finished {
+		t.Fatal("F should finish the day")
+	}
+	m = send(m, " ")
+	if ph, _, _ := m.phase(); ph != phaseDone {
+		t.Fatalf("want day done, got %d", ph)
+	}
+}
+
+func TestOpenCyclerHasNoFinishOrExtend(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 0))
+	m := withBlocks(t, block{
+		Title: "Sunday only", Start: hm(9, 0), End: hm(10, 30),
+		ActiveDays: []int{int(time.Sunday)},
+	})
+	m = send(m, "c")
+	m = send(m, "e")
+	if m.ext != nil {
+		t.Fatal("there is no scheduled end to extend")
+	}
+	m = send(m, "f")
+	if m.prompt != nil {
+		t.Fatal("and nothing to finish early")
+	}
+}
+
+func TestOpenCyclerDiesAtMidnight(t *testing.T) {
+	setClock := setup(t)
+	setClock(time.Date(2026, 10, 21, 23, 0, 0, 0, time.Local))
+	m := withBlocks(t, block{
+		Title: "Sunday only", Start: hm(9, 0), End: hm(10, 30),
+		ActiveDays: []int{int(time.Sunday)},
+	})
+	m = send(m, "c")
+	if !m.s.OpenCycler {
+		t.Fatal("setup: want an open cycler")
+	}
+
+	next := time.Date(2026, 10, 22, 0, 1, 0, 0, time.Local)
+	setClock(next)
+	m.lastTick = next.Add(-time.Second)
+	m.lastPoll = next.Add(-pollEvery - time.Second)
+	upd, _ := m.Update(tickMsg(next))
+	m = upd.(model)
+	if m.s.OpenCycler {
+		t.Fatal("it should not carry into the new day")
+	}
+}
+
+func TestOpenCyclerOnlyOnABlocklessDay(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 45))
+	m := withBlocks(t,
+		block{Title: "A", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "B", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	if ph, _, _ := m.phase(); ph != phaseGap {
+		t.Fatalf("setup: want a bounded gap, got %d", ph)
+	}
+	m = send(m, "c")
+	if m.s.OpenCycler {
+		t.Fatal("a gap between real blocks is not a blockless day")
 	}
 }

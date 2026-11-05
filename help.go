@@ -33,7 +33,7 @@ var (
 	}
 	doneHelp = []string{"C configure", "q quit"}
 	gapHelp  = []string{"f start next", "F finish day", "C configure", "? help", "q quit"}
-	freeHelp = []string{"C configure", "q quit"}
+	freeHelp = []string{"c start cycler", "C configure", "? help", "q quit"}
 )
 
 const helpSep = "   "

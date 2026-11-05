@@ -103,32 +103,85 @@ func clockBounds(start, end string, endStyle lipgloss.Style, artW, cw int) strin
 	return spaces(left) + grayStyle.Render(start) + spaces(gap) + endStyle.Render(end)
 }
 
-// the shared clock screen: a block, or a stretch of free time
-func (m model) clockView(title string, color lipgloss.TerminalColor, start, end int, showBounds bool, status []string, help []string) string {
+// the shared clock screen: a block, or a stretch of free time.
+//
+// status is asked for the rows it may use rather than handed a fixed list,
+// because a prompt or an open control has to be on screen before the clock art
+// does — a keypress is about to answer it. the art is what yields on a short
+// panel, then the start/end row, then the spacer.
+func (m model) clockView(title string, color lipgloss.TerminalColor, start, end int, showBounds bool, status func(int) []string, help []string) string {
 	w, h := m.w, m.h
 	cw, ch := contentWidth(w), contentHeight(h)
 
 	head := []string{m.blockHeadRow(cw)}
+	region := blockRows(len(head), len(help), ch)
 	style := lipgloss.NewStyle().Foreground(color)
 
 	now := minuteOf(nowFn())
 	clock := fmtClock(now)
 	f := pickFont(clock, cw, h)
-	body := clockArt(clock, style, cw, h)
+	art := clockArt(clock, style, cw, h)
+
+	boundsRow := ""
 	if showBounds {
 		endStyle := grayStyle
 		if inFinalStretch(now, end) {
 			endStyle = lipgloss.NewStyle().Foreground(yellow)
 		}
-		body = append(body, clockBounds(fmtClock(start), fmtClock(end), endStyle, f.width(clock), cw))
+		boundsRow = clockBounds(fmtClock(start), fmtClock(end), endStyle, f.width(clock), cw)
 	}
-	body = append(body, "", center(style.Bold(true).Render(truncWidth(title, cw)), cw))
-	if len(status) > 0 {
-		body = append(body, "")
-		body = append(body, status...)
+	titleRow := center(style.Bold(true).Render(truncWidth(title, cw)), cw)
+
+	// the status is sized first and then never dropped: the ladder below sheds
+	// the art around it, rather than shedding the thing a keypress will answer
+	budget := max(0, min(2, region-2))
+	if budget == 0 && (m.ext != nil || m.prompt != nil) {
+		budget = 1
+	}
+	statusRows := status(budget)
+
+	assemble := func(withArt, withBounds, withGap bool) []string {
+		var out []string
+		if withArt {
+			out = append(out, art...)
+		}
+		if withBounds && boundsRow != "" {
+			out = append(out, boundsRow)
+		}
+		if withGap && len(out) > 0 {
+			out = append(out, "")
+		}
+		out = append(out, titleRow)
+		if len(statusRows) > 0 {
+			if withGap {
+				out = append(out, "")
+			}
+			out = append(out, statusRows...)
+		}
+		return out
 	}
 
+	var body []string
+	for _, opt := range [][3]bool{
+		{true, true, true},
+		{true, true, false},
+		{true, false, false},
+		{false, false, false},
+	} {
+		body = assemble(opt[0], opt[1], opt[2])
+		if len(body) <= region {
+			break
+		}
+	}
 	return renderPanel(stackContent(head, body, help, ch), w, h, color)
+}
+
+// a confirm, centered and cut to the panel. an untruncated block title can
+// otherwise push the prompt wider than the panel and wrap the whole layout.
+func promptRow(c *confirm, cw int) string {
+	const tail = " y/n"
+	body := truncWidth(c.prompt, max(1, cw-len(tail)))
+	return center(promptStyle.Render(body+tail), cw)
 }
 
 // the centered, wrapped source output shared by the cycler timer and a block
@@ -144,19 +197,20 @@ func sourceRows(text string, style lipgloss.Style, cw, w, maxRows int) []string 
 	return out
 }
 
-func (m model) standardBlockView(b resolvedBlock, idx int) string {
+func (m model) standardBlockView(b resolvedBlock) string {
 	cw := contentWidth(m.w)
 	help := toggledHelp(blockHelp, m.c.HelpFull, cw)
 
-	var status []string
-	switch {
-	case m.ext != nil:
-		status = m.extendRows(b, idx, cw)
-	case m.prompt != nil:
-		status = []string{center(promptStyle.Render(m.prompt.prompt+" y/n"), cw)}
-	default:
-		r := m.src[b.ID]
-		status = sourceRows(r.text, r.style(), cw, m.w, 2)
+	status := func(rows int) []string {
+		switch {
+		case m.ext != nil:
+			return m.extendRows(cw, rows)
+		case m.prompt != nil:
+			return []string{promptRow(m.prompt, cw)}
+		default:
+			r := m.src[b.ID]
+			return sourceRows(r.text, r.style(), cw, m.w, min(rows, 2))
+		}
 	}
 	return m.clockView(b.Title, b.colorOf(), b.start, b.end, true, status, help)
 }
@@ -170,9 +224,11 @@ func (m model) freeTimeView(start, end int, bounded bool) string {
 		keys = gapHelp
 	}
 	help := toggledHelp(keys, m.c.HelpFull, cw)
-	var status []string
-	if m.prompt != nil {
-		status = []string{center(promptStyle.Render(m.prompt.prompt+" y/n"), cw)}
+	status := func(int) []string {
+		if m.prompt == nil {
+			return nil
+		}
+		return []string{promptRow(m.prompt, cw)}
 	}
 	return m.clockView("FREE TIME", gray, start, end, bounded, status, help)
 }
@@ -184,6 +240,9 @@ func (m model) sleepView(first resolvedBlock) string {
 	var body []string
 	for _, l := range wrapText(msg, cw) {
 		body = append(body, center(grayStyle.Render(l), cw))
+	}
+	if m.prompt != nil {
+		body = append(body, "", promptRow(m.prompt, cw))
 	}
 	help := toggledHelp(gapHelp, m.c.HelpFull, cw)
 	return renderPanel(stackContent(head, body, help, ch), m.w, m.h, gray)
@@ -204,6 +263,9 @@ func (m model) dayDoneView() string {
 	}
 	line := greenStyle.Render("Day is done!") + grayStyle.Render(" │ "+tail)
 	body := []string{center(truncWidth2(line, cw), cw)}
+	if m.prompt != nil {
+		body = append(body, "", promptRow(m.prompt, cw))
+	}
 	help := toggledHelp(doneHelp, m.c.HelpFull, cw)
 	return renderPanel(stackContent(head, body, help, ch), m.w, m.h, green)
 }
@@ -224,7 +286,9 @@ var extendSteps = []int{5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120}
 const extendStart = 1
 
 type extendState struct {
-	idx  int
+	// the block itself, not its position: an index goes stale the moment the
+	// day's boundaries move or the clock rolls into the next block
+	id   string
 	step int
 }
 
@@ -239,22 +303,68 @@ func fmtDur(mins int) string {
 	return fmt.Sprintf("%dh%dm", h, m)
 }
 
-// the new end a commit would write, clamped to the end of the day
-func (m model) extendEnd(b resolvedBlock) int {
-	return min(b.end+extendSteps[m.ext.step], minsPerDay-1)
+// the block the open control is acting on, found by identity
+func (m model) extendTarget() (resolvedBlock, int, bool) {
+	if m.ext == nil {
+		return resolvedBlock{}, -1, false
+	}
+	for i, b := range m.s.dayBlocks(m.c) {
+		if b.ID == m.ext.id && !b.cancelled {
+			return b, i, true
+		}
+	}
+	return resolvedBlock{}, -1, false
 }
 
-func (m model) extendRows(b resolvedBlock, idx, cw int) []string {
-	line := grayStyle.Render("Extend by ") + orangeStyle.Render("◀ ") +
-		promptStyle.Render(fmtDur(extendSteps[m.ext.step])) + orangeStyle.Render(" ▶")
-	rows := []string{center(line, cw)}
-
-	if lost := m.s.wouldCancel(m.c, idx+1, m.extendEnd(b)); len(lost) > 0 {
-		warn := "Will cancel " + lost[0]
-		if len(lost) > 1 {
-			warn = fmt.Sprintf("Will cancel %d blocks", len(lost))
-		}
-		rows = append(rows, center(redStyle.Render(warn), cw))
+// the control only stands while its own block is the one running. adjacent
+// blocks hand over without passing through a gap, so the phase alone is not
+// enough to tell that the block it was opened on has ended.
+func (m model) extendLive() bool {
+	if m.ext == nil {
+		return false
 	}
-	return rows
+	ph, b, _ := m.phase()
+	return ph == phaseBlock && b.ID == m.ext.id
+}
+
+// where an extension is measured from. a held block is already past its end,
+// so its step runs from now — otherwise a short step lands in the past and
+// changes nothing visible.
+func (m model) extendFrom(b resolvedBlock) int {
+	from := b.end
+	if now := minuteOf(nowFn()); m.s.Held == b.ID && now > from {
+		from = now
+	}
+	return from
+}
+
+// the new end a commit would write, clamped to the end of the day
+func (m model) extendEnd(b resolvedBlock) int {
+	return min(m.extendFrom(b)+extendSteps[m.ext.step], minsPerDay-1)
+}
+
+// maxRows is the panel's budget. the warning is never the row that gets
+// dropped: a step that destroys blocks has to say so before enter commits it.
+func (m model) extendRows(cw, maxRows int) []string {
+	b, idx, ok := m.extendTarget()
+	if !ok || maxRows < 1 {
+		return nil
+	}
+	// the effective step, not the chosen one: against the end of the day they
+	// differ, and a stepper that keeps counting while nothing moves is a lie
+	stepper := grayStyle.Render("Extend by ") + orangeStyle.Render("◀ ") +
+		promptStyle.Render(fmtDur(m.extendEnd(b)-m.extendFrom(b))) + orangeStyle.Render(" ▶")
+
+	lost := m.s.wouldCancel(m.c, idx+1, m.extendEnd(b))
+	if len(lost) == 0 {
+		return []string{center(stepper, cw)}
+	}
+	warn := "Will cancel " + lost[0]
+	if len(lost) > 1 {
+		warn = fmt.Sprintf("Will cancel %d blocks", len(lost))
+	}
+	if maxRows < 2 {
+		return []string{center(stepper+grayStyle.Render(" · ")+redStyle.Render(warn), cw)}
+	}
+	return []string{center(stepper, cw), center(redStyle.Render(warn), cw)}
 }

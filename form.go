@@ -284,6 +284,8 @@ func (f *form) move(dir int) {
 	f.commit()
 	f.focus = ls[i].f
 	f.cell = 0
+	// a refusal from the last save attempt no longer describes the form
+	f.err = ""
 }
 
 // moves by dir and starts editing when the landing line is text
@@ -312,6 +314,7 @@ func (f *form) commit() {
 		return
 	}
 	f.editing = false
+	f.cell = 0
 	f.blurAll()
 	// a limit of zero is no limit, which reads as an empty field
 	if n, err := strconv.Atoi(f.val(fTimes, 0)); err == nil && n == 0 {
@@ -577,10 +580,6 @@ func (m model) updateSelected(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case right:
 			f.btyp = (f.btyp + 1) % len(blockTypes)
 		}
-		// switching to cycler disables the line the cursor may be standing on
-		if f.line().disabled {
-			f.move(1)
-		}
 	case fColor:
 		switch {
 		case left:
@@ -670,6 +669,7 @@ func (m *model) cancelForm() {
 }
 
 func (m *model) saveForm() tea.Cmd {
+	m.f.err = ""
 	if m.f.kind == formBlock {
 		return m.saveBlockForm()
 	}
@@ -740,6 +740,7 @@ func (m *model) saveItemForm() tea.Cmd {
 func (m *model) saveBlockForm() tea.Cmd {
 	f := m.f
 	if !f.saveReady() {
+		f.err = "Start and end must be valid times"
 		return nil
 	}
 	title := strings.TrimSpace(f.val(fTitle, 0))
@@ -781,6 +782,11 @@ func (m *model) saveBlockForm() tea.Cmd {
 			}
 			*p = b
 		}
+	}
+	// a hold cannot stand on a block that no longer runs today, or that is no
+	// longer a cycler block at all
+	if m.s.Held == b.ID && (b.Type != blkCycler || !b.activeOn(m.s.weekday())) {
+		m.s.Held, m.s.Running = "", ""
 	}
 	m.c.sortBlocks()
 	m.selBlock = max(0, m.c.blockIndexOf(b.ID))

@@ -1,9 +1,6 @@
 package main
 
 import (
-	"slices"
-	"time"
-
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -15,30 +12,40 @@ func (m model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.blocksOff() {
 		return m.updateCycler(msg)
 	}
+	// the control cannot outlive the block it was opened on
 	if m.ext != nil {
-		return m.updateExtend(msg)
+		if m.extendLive() {
+			return m.updateExtend(msg)
+		}
+		m.ext = nil
 	}
-	if m.prompt != nil && !m.inCyclerBlock() {
-		return m.handleBlockPrompt(msg)
-	}
+	// routed by what the prompt is, not by where the clock has since moved: a
+	// cycler prompt answered after its block ended must still be answered
 	if m.prompt != nil {
 		switch m.prompt.kind {
 		case confirmBlockFinish, confirmStartNext:
 			return m.handleBlockPrompt(msg)
 		}
+		return m.handleCyclerPrompt(msg)
 	}
 
 	ph, b, idx := m.phase()
 	switch ph {
 	case phaseBlock:
 		if b.Type == blkCycler {
-			switch msg.String() {
-			case "f", "e":
-				return m.blockAction(msg.String(), b, idx)
+			// the ad-hoc cycler has no scheduled end, so there is nothing to
+			// finish early or extend
+			if b.ID != openCyclerID {
+				switch msg.String() {
+				case "f", "e":
+					return m.blockAction(msg.String(), b, idx)
+				}
 			}
 			return m.updateCycler(msg)
 		}
 		return m.updateStandardBlock(msg, b, idx)
+	case phaseNoBlocks:
+		return m.updateFreeDay(msg)
 	case phaseGap, phaseSleep:
 		// before the first block and between blocks behave alike: there is a
 		// next block, so it can be pulled forward
@@ -78,13 +85,33 @@ func (m model) updateGap(msg tea.KeyMsg, nextIdx int) (tea.Model, tea.Cmd) {
 	case "f":
 		bs := m.s.dayBlocks(m.c)
 		if nextIdx >= 0 && nextIdx < len(bs) {
-			m.prompt = newConfirm(confirmStartNext, "Start "+bs[nextIdx].Title+" early?")
+			m.prompt = newBlockConfirm(confirmStartNext, "Start "+bs[nextIdx].Title+" early?", nextIdx)
 		}
 	}
 	return m, nil
 }
 
-// sleep, day done, and an all-day stretch of free time
+// a day with no blocks of its own: free time until the cycler is started by
+// hand, which runs it open-ended until F or midnight
+func (m model) updateFreeDay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		return m.quit()
+	case "?":
+		m.toggleHelp()
+	case "C":
+		return m, m.openConfig()
+	case "c":
+		m.s.OpenCycler = true
+		m.s.OpenCyclerAt = minuteOf(nowFn())
+		m.s.reconcile(m.c)
+		m.s.save()
+		return m, m.sourcesCmd()
+	}
+	return m, nil
+}
+
+// day done, and the stretch before the first block
 func (m model) updateQuiet(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q":
@@ -100,33 +127,45 @@ func (m model) updateQuiet(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) blockAction(key string, b resolvedBlock, idx int) (tea.Model, tea.Cmd) {
 	switch key {
 	case "f":
-		m.prompt = newConfirm(confirmBlockFinish, "Finish "+b.Title+" early?")
+		m.prompt = newBlockConfirm(confirmBlockFinish, "Finish "+b.Title+" early?", idx)
 	case "e":
-		m.ext = &extendState{idx: idx, step: extendStart}
+		m.ext = &extendState{id: b.ID, step: extendStart}
 	}
 	return m, nil
 }
 
 func (m model) handleBlockPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	res := m.prompt.handle(msg)
-	kind := m.prompt.kind
+	kind, idx := m.prompt.kind, m.prompt.idx
 	m.prompt = nil
 	if res != confirmYes {
 		return m, nil
 	}
 
 	now := minuteOf(nowFn())
-	_, _, idx := m.phase()
+	bs := m.s.dayBlocks(m.c)
+	if idx < 0 || idx >= len(bs) {
+		return m, nil
+	}
 	switch kind {
 	case confirmBlockFinish:
-		m.s.Held = ""
-		m.s.endBlockAt(m.c, idx, now)
+		at := now
+		// a block that ran out while the prompt was open is finished, not
+		// stretched; a held one is already past its end by design
+		if m.s.Held != bs[idx].ID && at > bs[idx].end {
+			at = bs[idx].end
+		}
+		m.s.Held, m.s.Running = "", ""
+		// a cycler block taken off screen leaves its timer counting down to a
+		// notification with nothing to answer it
+		if bs[idx].Type == blkCycler && m.s.Timer == timerGoing {
+			m.s.Timer = timerPaused
+		}
+		m.s.endBlockAt(m.c, idx, at)
 	case confirmStartNext:
 		// the block before the gap has already ended; stretching it would
 		// swallow the gap rather than skip it
-		m.s.cascadeFrom(m.c, idx, now)
-	case confirmFinish:
-		m.finishDay()
+		m.s.startBlockAt(m.c, idx, now)
 	}
 	m.s.save()
 	return m, m.sourcesCmd()
@@ -141,9 +180,14 @@ func (m model) updateExtend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right", "l":
 		m.ext.step = min(len(extendSteps)-1, m.ext.step+1)
 	case "enter":
-		_, b, idx := m.phase()
-		m.s.endBlockAt(m.c, idx, m.extendEnd(b))
-		m.s.save()
+		// the block the control was opened on, not whatever is current now
+		b, idx, ok := m.extendTarget()
+		if ok {
+			end := m.extendEnd(b)
+			m.s.endBlockAt(m.c, idx, end)
+			m.syncHold(b.ID, end)
+			m.s.save()
+		}
 		m.ext = nil
 		return m, m.sourcesCmd()
 	}
@@ -152,47 +196,82 @@ func (m model) updateExtend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // @region block:poll -- PHASE WATCH AND CYCLER OVERRUN
 
-// the block the clock alone puts us in, ignoring any held block; "" when none
-func (m model) clockBlockID() string {
-	now := minuteOf(nowFn())
-	for _, b := range m.s.dayBlocks(m.c) {
-		if !b.cancelled && now >= b.start && now < b.end {
-			return b.ID
-		}
+// records which cycler block a timer belongs to the moment it starts, so the
+// overrun is detectable later without having to catch the transition
+func (m *model) markRunningBlock() {
+	if m.blocksOff() {
+		return
 	}
-	return ""
+	if ph, b, _ := m.phase(); ph == phaseBlock && b.Type == blkCycler {
+		m.s.Running = b.ID
+	}
 }
 
 // watches for a cycler block whose end passes while its timer is still live
-func (m *model) checkBlocks(now time.Time) {
+func (m *model) checkBlocks() {
 	if m.blocksOff() {
-		m.lastBlock = ""
+		m.s.Running = ""
 		return
 	}
-	cur := m.clockBlockID()
-	prev := m.lastBlock
-	m.lastBlock = cur
-	if prev == "" || prev == cur || m.s.Held != "" {
+	if m.ext != nil && !m.extendLive() {
+		m.ext = nil
+	}
+	// a day ended by hand has nothing left to overrun
+	if m.s.Finished {
 		return
 	}
-	b := m.c.blockByID(prev)
-	if b == nil || b.Type != blkCycler {
+
+	now := minuteOf(nowFn())
+	bs := m.s.dayBlocks(m.c)
+	live := m.s.Current != "" && m.s.Timer != timerIdle
+
+	// an idle timer is nothing to interrupt; anything else is work in progress.
+	// a hold cannot outlive the work it was holding for — the item may have
+	// been edited or deleted out from under it.
+	if !live {
+		m.s.Running = ""
+		if m.s.Held != "" {
+			m.s.Held = ""
+			m.s.save()
+		}
 		return
 	}
-	// an idle timer is nothing to interrupt; anything else is work in progress
-	if m.s.Current == "" || m.s.Timer == timerIdle {
+	for _, b := range bs {
+		if !b.cancelled && b.Type == blkCycler && now >= b.start && now < b.end {
+			m.s.Running = b.ID
+		}
+	}
+	if m.s.Held != "" || m.s.Running == "" {
 		return
 	}
-	m.s.Held = prev
-	if !slices.Contains(m.s.Notified, prev) {
-		m.s.Notified = append(m.s.Notified, prev)
-		name := prev
+
+	for _, b := range bs {
+		if b.ID != m.s.Running {
+			continue
+		}
+		if b.cancelled || now < b.end {
+			return
+		}
+		// the Held guard above already stops this firing every poll, so a
+		// second overrun of the same block after an extend still announces
+		// itself rather than being suppressed for the rest of the day
+		m.s.Held = b.ID
+		name := b.Title
 		if it := m.c.byID(m.s.Current); it != nil {
 			name = it.Name
 		}
 		notifyTextFn(b.Title + " ended, but " + name + " is still running. Finish or mark complete to continue.")
+		m.s.save()
+		return
 	}
-	m.s.save()
+}
+
+// a boundary that moved may have given a held block more time, in which case
+// it is running again rather than overrunning
+func (m *model) syncHold(id string, newEnd int) {
+	if m.s.Held == id && newEnd > minuteOf(nowFn()) {
+		m.s.Held = ""
+	}
 }
 
 // a held block ends the moment its item is finished with, and the rest of the
@@ -202,12 +281,11 @@ func (m *model) releaseHeld() {
 		return
 	}
 	id := m.s.Held
-	m.s.Held = ""
+	m.s.Held, m.s.Running = "", ""
 	for i, b := range m.s.dayBlocks(m.c) {
 		if b.ID == id {
 			m.s.endBlockAt(m.c, i, minuteOf(nowFn()))
 			break
 		}
 	}
-	m.lastBlock = m.clockBlockID()
 }

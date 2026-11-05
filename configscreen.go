@@ -14,6 +14,7 @@ const detailMinCols = 60
 
 func (m *model) openConfig() tea.Cmd {
 	m.prompt = nil
+	m.ext = nil
 	m.sel = max(0, m.c.indexOf(m.s.Current))
 	m.selBlock = clamp(m.selBlock, 0, max(0, len(m.c.Blocks)-1))
 	m.tab = tabCycler

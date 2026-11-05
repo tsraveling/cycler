@@ -70,10 +70,16 @@ blocks:
   blocks, the day reads: Sleep before the first, the block you are in,
   FREE TIME between blocks, and Day Done after the last.
 
-  f ends the current block now and pulls the next one forward. e
-  extends it, cancelling any block the extension swallows. a cycler
-  block whose end passes while its timer is still running is held open
-  until the item is finished.
+  f ends the current block now; the time until the next one starts
+  becomes free, so a gap you configured is never swallowed. from inside
+  a gap, f instead pulls the next block forward to start now. e extends
+  a block, cancelling any block the extension swallows.
+
+  a cycler block whose end passes while its timer is still running is
+  held open until the item is finished.
+
+  on a day none of your blocks run on, c starts an open-ended cycler
+  from the current time; it runs until F or midnight.
 
 sources:
   Markdown TODO   first unchecked checkbox in a file

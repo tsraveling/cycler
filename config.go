@@ -235,10 +235,13 @@ func loadConfig() *config {
 			b.Color = defaultBlockColor
 			repaired = true
 		}
-		b.Start = clamp(b.Start, 0, minsPerDay-1)
-		b.End = clamp(b.End, 0, minsPerDay-1)
+		if s, e := clamp(b.Start, 0, minsPerDay-1), clamp(b.End, 0, minsPerDay-1); s != b.Start || e != b.End {
+			b.Start, b.End = s, e
+			repaired = true
+		}
 		if !b.Source.valid() {
 			b.Source = srcStatic
+			repaired = true
 		}
 		days := normalizeDays(b.ActiveDays)
 		if b.ActiveDays == nil || (len(days) == 0 && len(b.ActiveDays) != 0) {
@@ -255,8 +258,18 @@ func loadConfig() *config {
 		}
 		blocks = append(blocks, b)
 	}
+	before := make([]string, len(blocks))
+	for i, b := range blocks {
+		before[i] = b.ID
+	}
 	c.Blocks = blocks
 	c.sortBlocks()
+	for i, b := range c.Blocks {
+		if b.ID != before[i] {
+			repaired = true
+			break
+		}
+	}
 
 	if repaired {
 		c.save()

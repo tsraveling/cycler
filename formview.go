@@ -59,7 +59,8 @@ func (f *form) timeView(fl field, fw int) string {
 	default:
 		body = textStyle.Render(pad2(hh.Value())) + grayStyle.Render(":") + textStyle.Render(pad2(mm.Value()))
 	}
-	if f.clockValid(fl) {
+	// blank and untouched is not yet wrong, though it still blocks the save
+	if f.clockValid(fl) || (hh.Value() == "" && mm.Value() == "") {
 		return body
 	}
 	warn := redStyle.Render("Invalid!")
