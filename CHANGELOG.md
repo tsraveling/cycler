@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.0 - 2026-11-05
+#### Features
+- time blocks (#2) - (66513a5) - Tim Raveling
+
+- - -
+
 ## v0.1.2 - 2026-11-03
 #### Bug Fixes
 - next timer now auto-starts - (46de05b) - Tim Raveling
