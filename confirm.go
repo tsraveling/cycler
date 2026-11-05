@@ -13,6 +13,8 @@ const (
 	confirmFinish
 	confirmDelete
 	confirmDiscard
+	confirmBlockFinish
+	confirmStartNext
 )
 
 type confirmResult int
@@ -27,10 +29,18 @@ const (
 type confirm struct {
 	kind   confirmKind
 	prompt string
+	// the block this was raised against, fixed at the moment it was raised. a
+	// prompt answered after the clock has moved on must still act on what it
+	// named, not on whatever is current by then.
+	idx int
 }
 
 func newConfirm(kind confirmKind, prompt string) *confirm {
-	return &confirm{kind: kind, prompt: prompt}
+	return &confirm{kind: kind, prompt: prompt, idx: -1}
+}
+
+func newBlockConfirm(kind confirmKind, prompt string, idx int) *confirm {
+	return &confirm{kind: kind, prompt: prompt, idx: idx}
 }
 
 // y confirms, any other key cancels

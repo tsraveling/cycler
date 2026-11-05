@@ -14,7 +14,10 @@ const detailMinCols = 60
 
 func (m *model) openConfig() tea.Cmd {
 	m.prompt = nil
+	m.ext = nil
 	m.sel = max(0, m.c.indexOf(m.s.Current))
+	m.selBlock = clamp(m.selBlock, 0, max(0, len(m.c.Blocks)-1))
+	m.tab = tabCycler
 	m.scr = scrConfig
 	return m.sourcesCmd()
 }
@@ -27,6 +30,9 @@ func (m *model) leaveConfig() tea.Cmd {
 }
 
 func (m model) updateConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.tab == tabBlocks {
+		return m.updateBlocks(msg)
+	}
 	if m.prompt != nil {
 		if m.prompt.handle(msg) == confirmYes {
 			m.deleteSelected()
@@ -38,7 +44,11 @@ func (m model) updateConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	n := len(m.c.Items)
 	switch msg.String() {
 	case "a":
+		m.insertAt = n
 		return m, m.openForm(-1)
+	case "tab":
+		m.tab = tabBlocks
+		return m, nil
 	case "esc":
 		cmd := m.leaveConfig()
 		return m, cmd
@@ -53,6 +63,9 @@ func (m model) updateConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "e", "enter":
 		return m, m.openForm(m.sel)
+	case "o":
+		m.insertAt = m.sel + 1
+		return m, m.openForm(-1)
 	case "up", "k":
 		m.sel = max(0, m.sel-1)
 	case "down", "j":
@@ -94,9 +107,12 @@ func (m *model) deleteSelected() {
 // @region config:view -- LIST + DETAIL PANE
 
 func (m model) configView() string {
+	if m.tab == tabBlocks {
+		return m.blockListView()
+	}
 	w, h := m.w, m.h
 	cw, ch := contentWidth(w), contentHeight(h)
-	head := []string{orangeStyle.Bold(true).Render("Cycler Configuration"), ""}
+	head := []string{m.tabHeader(), ""}
 
 	if len(m.c.Items) == 0 {
 		body := []string{center(grayStyle.Render("No items yet."), cw)}

@@ -60,8 +60,15 @@ type model struct {
 	srcPending int
 	srcIssued  time.Time
 
-	// config list selection
-	sel int
+	// config list selections, one per tab
+	sel      int
+	selBlock int
+	// where a new item lands in the list; len(Items) appends
+	insertAt int
+	tab      configTab
+
+	// the open extend control
+	ext *extendState
 
 	f *form
 
@@ -108,7 +115,7 @@ func finishFor(s *dayState) finishInfo {
 
 // where to land when no other screen claims the session
 func (m model) homeScreen() screen {
-	if len(m.c.Items) == 0 {
+	if len(m.c.Items) == 0 && len(m.c.Blocks) == 0 {
 		return scrFirstRun
 	}
 	return scrCycler
@@ -131,17 +138,22 @@ const (
 	maxSrcPending = 3
 )
 
-func readSources(items []item) map[string]sourceResult {
-	out := make(map[string]sourceResult, len(items))
+func readSources(items []item, blocks []block) map[string]sourceResult {
+	out := make(map[string]sourceResult, len(items)+len(blocks))
 	for _, it := range items {
 		out[it.ID] = readSource(it.Source, it.SourceConfig)
+	}
+	for _, b := range blocks {
+		if b.Type != blkCycler {
+			out[b.ID] = readSource(b.Source, b.SourceConfig)
+		}
 	}
 	return out
 }
 
 // reads every source inline; only for startup
 func (m *model) refreshSources() {
-	m.src = readSources(m.c.Items)
+	m.src = readSources(m.c.Items, m.c.Blocks)
 }
 
 // reads every source off the update loop. only the newest read is applied.
@@ -151,13 +163,14 @@ func (m *model) sourcesCmd() tea.Cmd {
 	m.srcIssued = nowFn()
 	gen := m.srcGen
 	items := slices.Clone(m.c.Items)
+	blocks := slices.Clone(m.c.Blocks)
 	var key *previewKey
 	if m.f != nil {
 		k := m.f.key()
 		key = &k
 	}
 	return func() tea.Msg {
-		msg := sourcesMsg{gen: gen, results: readSources(items)}
+		msg := sourcesMsg{gen: gen, results: readSources(items, blocks)}
 		if key != nil {
 			r := readSource(key.typ, key.cfg)
 			msg.preview, msg.from = &r, *key
@@ -198,7 +211,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case scrFirstRun:
 			return m.updateFirstRun(msg)
 		case scrCycler:
-			return m.updateCycler(msg)
+			return m.updateMain(msg)
 		case scrConfig:
 			return m.updateConfig(msg)
 		case scrForm:
@@ -248,6 +261,11 @@ func (m *model) tick(now time.Time) tea.Cmd {
 	if now.Sub(m.lastPoll) >= pollEvery {
 		m.lastPoll = now
 		m.checkRollover(now)
+		// only while the day is on screen: an edit in progress must not trip
+		// the overrun watch against the window it is halfway through changing
+		if m.scr == scrCycler {
+			m.checkBlocks()
+		}
 		stale := now.Sub(m.srcIssued) > srcStaleAfter && m.srcPending < maxSrcPending
 		if m.srcPending == 0 || stale {
 			return m.sourcesCmd()
@@ -256,10 +274,12 @@ func (m *model) tick(now time.Time) tea.Cmd {
 	return nil
 }
 
-// a new logical day arriving mid-session ends the old one, but never under a
-// running timer or an open prompt
+// a new logical day arriving mid-session ends the old one, but never under an
+// open prompt. a running timer no longer holds it off: the day now turns at
+// midnight, so holding off would leave s.Date on yesterday while every block
+// decision resolves against today's wall clock.
 func (m *model) checkRollover(now time.Time) {
-	if m.scr != scrCycler || m.prompt != nil || m.s.Timer == timerGoing {
+	if m.scr != scrCycler || m.prompt != nil {
 		return
 	}
 	today := logicalDate(now)
@@ -272,6 +292,7 @@ func (m *model) checkRollover(now time.Time) {
 	}
 	m.s = freshState(today, m.c)
 	m.carry = 0
+	m.ext = nil
 	m.s.save()
 }
 
@@ -320,7 +341,41 @@ func (m model) View() string {
 	case scrFinish:
 		return m.finishView()
 	}
-	return m.cyclerView()
+	return m.mainView()
+}
+
+// the main screen is the cycler until blocks give the day a shape
+func (m model) mainView() string {
+	if m.blocksOff() {
+		return m.cyclerView()
+	}
+	ph, b, idx := m.phase()
+	switch ph {
+	case phaseNoBlocks:
+		return m.freeTimeView(0, 0, false)
+	case phaseSleep:
+		return m.sleepView(b)
+	case phaseGap:
+		return m.freeTimeView(m.gapStart(idx), b.start, true)
+	case phaseDone:
+		return m.dayDoneView()
+	}
+	if b.Type == blkCycler {
+		return m.cyclerView()
+	}
+	return m.standardBlockView(b)
+}
+
+// when the free time before block idx began: the end of the last block that ran
+func (m model) gapStart(idx int) int {
+	bs := m.s.dayBlocks(m.c)
+	at := 0
+	for i := 0; i < idx && i < len(bs); i++ {
+		if !bs[i].cancelled {
+			at = max(at, bs[i].end)
+		}
+	}
+	return at
 }
 
 func (m model) firstRunView() string {

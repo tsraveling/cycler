@@ -14,7 +14,9 @@ import (
 var nowFn = time.Now
 
 const (
-	rolloverHour = 4
+	// blocks are wall-clock minutes from midnight, so the day has to turn over
+	// at midnight too or the small hours become unreachable
+	rolloverHour = 0
 	dateLayout   = "2006-01-02"
 )
 
@@ -26,6 +28,14 @@ const (
 	timerPaused timerState = "paused"
 	timerDone   timerState = "done"
 )
+
+// a day's drift from a block's configured window. Start and End are -1 when
+// the day has not moved that edge.
+type blockOverride struct {
+	Start     int  `json:"start"`
+	End       int  `json:"end"`
+	Cancelled bool `json:"cancelled"`
+}
 
 // one advanced item. Name is snapshotted so later config edits can't rewrite
 // the day's history.
@@ -48,6 +58,19 @@ type dayState struct {
 	CycleDone []string `json:"cycleDone"`
 	// item IDs stepped over for this cycle only, unlogged
 	Passed []string `json:"passed"`
+	// today's drift from the configured block windows
+	Blocks map[string]blockOverride `json:"blockOverrides"`
+	// the cycler block the running timer belongs to. recorded while the block
+	// is live so the overrun is still detectable after a config visit or a
+	// restart, neither of which can be inferred from a block transition.
+	Running string `json:"runningBlock"`
+	// a cycler block held open past its end by a timer still running
+	Held string `json:"heldBlock"`
+	// the day was ended by hand, before its last block ran out
+	Finished bool `json:"finished"`
+	// an open-ended cycler started by hand on a day with no blocks of its own
+	OpenCycler   bool `json:"openCycler"`
+	OpenCyclerAt int  `json:"openCyclerAt"`
 }
 
 func statePath() string { return filepath.Join(configDirFn(), "state.json") }

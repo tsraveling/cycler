@@ -4,20 +4,25 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // @region app:config -- CYCLER ITEMS + PREFS
 
 const (
 	maxNameLen     = 24
+	maxTitleLen    = 24
 	maxMinutes     = 180
 	maxTimesPerDay = 99
+	minsPerDay     = 24 * 60
 )
 
 type item struct {
@@ -32,9 +37,43 @@ type item struct {
 	SourceConfig string     `json:"sourceConfig"`
 }
 
+type blockType string
+
+const (
+	blkStandard blockType = "standard"
+	blkCycler   blockType = "cycler"
+)
+
+var blockTypes = []blockType{blkStandard, blkCycler}
+
+func (t blockType) valid() bool { return slices.Contains(blockTypes, t) }
+
+func (t blockType) label() string {
+	if t == blkCycler {
+		return "Cycler"
+	}
+	return "Standard"
+}
+
+// a titled window of wall-clock time. Start and End are minutes from midnight,
+// half-open [Start, End), and never cross midnight.
+type block struct {
+	ID    string    `json:"id"`
+	Title string    `json:"title"`
+	Type  blockType `json:"type"`
+	// key into blockColors; ignored for a cycler block
+	Color        string     `json:"color"`
+	Start        int        `json:"start"`
+	End          int        `json:"end"`
+	ActiveDays   []int      `json:"activeDays"`
+	Source       sourceType `json:"source"`
+	SourceConfig string     `json:"sourceConfig"`
+}
+
 type config struct {
-	Items    []item `json:"items"`
-	HelpFull bool   `json:"helpFull"`
+	Items    []item  `json:"items"`
+	Blocks   []block `json:"blocks"`
+	HelpFull bool    `json:"helpFull"`
 }
 
 // the order days are stored and shown in
@@ -87,12 +126,17 @@ func normalizeDays(days []int) []int {
 	return out
 }
 
-func (it item) activeOn(wd time.Weekday) bool { return slices.Contains(it.ActiveDays, int(wd)) }
+func activeOn(days []int, wd time.Weekday) bool { return slices.Contains(days, int(wd)) }
 
-func (it item) daysLabel() string {
+func (it item) activeOn(wd time.Weekday) bool { return activeOn(it.ActiveDays, wd) }
+func (b block) activeOn(wd time.Weekday) bool { return activeOn(b.ActiveDays, wd) }
+func (it item) daysLabel() string             { return daysLabel(it.ActiveDays) }
+func (b block) daysLabel() string             { return daysLabel(b.ActiveDays) }
+
+func daysLabel(days []int) string {
 	var on []time.Weekday
 	for _, d := range weekOrder {
-		if it.activeOn(d) {
+		if activeOn(days, d) {
 			on = append(on, d)
 		}
 	}
@@ -101,7 +145,7 @@ func (it item) daysLabel() string {
 		return "Never"
 	case len(on) == 7:
 		return "Every day"
-	case len(on) == 5 && !it.activeOn(time.Saturday) && !it.activeOn(time.Sunday):
+	case len(on) == 5 && !activeOn(days, time.Saturday) && !activeOn(days, time.Sunday):
 		return "Weekdays"
 	}
 	parts := make([]string, len(on))
@@ -175,6 +219,58 @@ func loadConfig() *config {
 		valid = append(valid, it)
 	}
 	c.Items = valid
+
+	blocks := c.Blocks[:0]
+	for _, b := range c.Blocks {
+		if b.ID == "" || seen[b.ID] {
+			b.ID = newID()
+			repaired = true
+		}
+		seen[b.ID] = true
+		if !b.Type.valid() {
+			b.Type = blkStandard
+			repaired = true
+		}
+		if blockColors[blockColorIndex(b.Color)].key != b.Color {
+			b.Color = defaultBlockColor
+			repaired = true
+		}
+		if s, e := clamp(b.Start, 0, minsPerDay-1), clamp(b.End, 0, minsPerDay-1); s != b.Start || e != b.End {
+			b.Start, b.End = s, e
+			repaired = true
+		}
+		if !b.Source.valid() {
+			b.Source = srcStatic
+			repaired = true
+		}
+		days := normalizeDays(b.ActiveDays)
+		if b.ActiveDays == nil || (len(days) == 0 && len(b.ActiveDays) != 0) {
+			days = allDays()
+		}
+		if !slices.Equal(days, b.ActiveDays) {
+			b.ActiveDays = days
+			repaired = true
+		}
+		// a window that never opens is unrecoverable, so it goes
+		if b.End <= b.Start {
+			repaired = true
+			continue
+		}
+		blocks = append(blocks, b)
+	}
+	before := make([]string, len(blocks))
+	for i, b := range blocks {
+		before[i] = b.ID
+	}
+	c.Blocks = blocks
+	c.sortBlocks()
+	for i, b := range c.Blocks {
+		if b.ID != before[i] {
+			repaired = true
+			break
+		}
+	}
+
 	if repaired {
 		c.save()
 	}
@@ -199,6 +295,75 @@ func (c *config) byID(id string) *item {
 		return &c.Items[i]
 	}
 	return nil
+}
+
+func (c *config) blockIndexOf(id string) int {
+	for i, b := range c.Blocks {
+		if b.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (c *config) blockByID(id string) *block {
+	if i := c.blockIndexOf(id); i >= 0 {
+		return &c.Blocks[i]
+	}
+	return nil
+}
+
+// stored order is display order, so the list never has to sort to render
+func (c *config) sortBlocks() {
+	slices.SortStableFunc(c.Blocks, func(a, b block) int {
+		if a.Start != b.Start {
+			return a.Start - b.Start
+		}
+		return strings.Compare(a.Title, b.Title)
+	})
+}
+
+// first other block sharing a weekday with b whose window intersects it
+func (c *config) overlaps(b block) *block {
+	for i, o := range c.Blocks {
+		if o.ID == b.ID || b.Start >= o.End || o.Start >= b.End {
+			continue
+		}
+		for _, d := range b.ActiveDays {
+			if slices.Contains(o.ActiveDays, d) {
+				return &c.Blocks[i]
+			}
+		}
+	}
+	return nil
+}
+
+// a cycler block has no color of its own; it borrows the cycler's idle orange
+func (b block) colorOf() lipgloss.Color {
+	if b.Type == blkCycler {
+		return orange
+	}
+	return blockColor(b.Color)
+}
+
+// minutes from midnight as 15:04
+func fmtClock(min int) string {
+	return fmt.Sprintf("%02d:%02d", (min/60)%24, min%60)
+}
+
+// minutes from midnight as 1504, for breadcrumbs
+func fmtClockCompact(min int) string {
+	return fmt.Sprintf("%02d%02d", (min/60)%24, min%60)
+}
+
+// both cells filled, numeric and in range
+func parseClock(hh, mm string) (int, bool) {
+	h, herr := strconv.Atoi(hh)
+	m, merr := strconv.Atoi(mm)
+	if herr != nil || merr != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
 }
 
 func newID() string {

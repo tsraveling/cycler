@@ -19,8 +19,48 @@ var (
 	lightGray = lipgloss.Color("#A8A8A8")
 	white     = lipgloss.Color("#FFFFFF")
 	text      = lipgloss.Color("#DADADA")
-	moonBlue  = lipgloss.Color("#63C2FF")
 )
+
+// block palette, from the Tokyo Night ANSI set. its black and white are left
+// out: one is invisible on a dark terminal, the other reads as chrome gray.
+type blockSwatch struct {
+	key   string
+	name  string
+	color lipgloss.Color
+}
+
+var blockColors = []blockSwatch{
+	{"red", "Red", lipgloss.Color("#f7768e")},
+	{"orange", "Orange", lipgloss.Color("#ff9e64")},
+	{"yellow", "Yellow", lipgloss.Color("#e0af68")},
+	{"lime", "Lime", lipgloss.Color("#b9f27c")},
+	{"green", "Green", lipgloss.Color("#9ece6a")},
+	{"teal", "Teal", lipgloss.Color("#449dab")},
+	{"cyan", "Cyan", lipgloss.Color("#0db9d7")},
+	{"blue", "Blue", lipgloss.Color("#7aa2f7")},
+	{"sky", "Sky", lipgloss.Color("#7da6ff")},
+	{"purple", "Purple", lipgloss.Color("#ad8ee6")},
+	{"violet", "Violet", lipgloss.Color("#bb9af7")},
+	{"brightred", "Bright Red", lipgloss.Color("#ff7a93")},
+}
+
+const defaultBlockColor = "blue"
+
+// index of key, or of the default; never out of range
+func blockColorIndex(key string) int {
+	fallback := 0
+	for i, s := range blockColors {
+		switch s.key {
+		case key:
+			return i
+		case defaultBlockColor:
+			fallback = i
+		}
+	}
+	return fallback
+}
+
+func blockColor(key string) lipgloss.Color { return blockColors[blockColorIndex(key)].color }
 
 var (
 	grayStyle      = lipgloss.NewStyle().Foreground(gray)
@@ -32,7 +72,6 @@ var (
 	textStyle      = lipgloss.NewStyle().Foreground(text)
 	boldStyle      = lipgloss.NewStyle().Foreground(text).Bold(true)
 	promptStyle    = lipgloss.NewStyle().Foreground(white).Bold(true)
-	moonStyle      = lipgloss.NewStyle().Foreground(moonBlue)
 )
 
 // panel chrome consumed by the border and the left/right padding
