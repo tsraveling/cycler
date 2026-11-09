@@ -96,11 +96,33 @@ func dimPrefix(f bigFont, s string) int {
 // the block's last few minutes, where the end time starts warning
 func inFinalStretch(now, end int) bool { return now < end && end-now <= endWarnMins }
 
-// start left, end right, aligned to the clock art's own edges
-func clockBounds(start, end string, endStyle lipgloss.Style, artW, cw int) string {
+// start left, end right, the countdown centered between them, all aligned to
+// the clock art's own edges. the countdown is dropped when it would crowd the
+// bounds rather than squeezed in.
+func clockBounds(start, end, mid string, endStyle, midStyle lipgloss.Style, artW, cw int) string {
 	left := max(0, (cw-artW)/2)
-	gap := max(1, artW-lipgloss.Width(start)-lipgloss.Width(end))
-	return spaces(left) + grayStyle.Render(start) + spaces(gap) + endStyle.Render(end)
+	slack := artW - lipgloss.Width(start) - lipgloss.Width(end)
+	if mw := lipgloss.Width(mid); mid != "" && slack-mw >= 2 {
+		lg := (slack - mw) / 2
+		rg := slack - mw - lg
+		return spaces(left) + grayStyle.Render(start) + spaces(lg) +
+			midStyle.Render(mid) + spaces(rg) + endStyle.Render(end)
+	}
+	return spaces(left) + grayStyle.Render(start) + spaces(max(1, slack)) + endStyle.Render(end)
+}
+
+// seconds left as 1:03:10, 5:04 or 52s, with the style it reads in: gray until
+// the last minute, then yellow. empty once the time is up.
+func fmtRemaining(secs int) (string, lipgloss.Style) {
+	switch {
+	case secs <= 0:
+		return "", grayStyle
+	case secs < 60:
+		return fmt.Sprintf("%ds", secs), lipgloss.NewStyle().Foreground(yellow)
+	case secs < 3600:
+		return fmt.Sprintf("%d:%02d", secs/60, secs%60), grayStyle
+	}
+	return fmt.Sprintf("%d:%02d:%02d", secs/3600, (secs/60)%60, secs%60), grayStyle
 }
 
 // the shared clock screen: a block, or a stretch of free time.
@@ -109,7 +131,7 @@ func clockBounds(start, end string, endStyle lipgloss.Style, artW, cw int) strin
 // because a prompt or an open control has to be on screen before the clock art
 // does — a keypress is about to answer it. the art is what yields on a short
 // panel, then the start/end row, then the spacer.
-func (m model) clockView(title string, color lipgloss.TerminalColor, start, end int, showBounds bool, status func(int) []string, help []string) string {
+func (m model) clockView(title string, color lipgloss.TerminalColor, start, end int, showBounds, showRemain bool, status func(int) []string, help []string) string {
 	w, h := m.w, m.h
 	cw, ch := contentWidth(w), contentHeight(h)
 
@@ -128,7 +150,11 @@ func (m model) clockView(title string, color lipgloss.TerminalColor, start, end 
 		if inFinalStretch(now, end) {
 			endStyle = lipgloss.NewStyle().Foreground(yellow)
 		}
-		boundsRow = clockBounds(fmtClock(start), fmtClock(end), endStyle, f.width(clock), cw)
+		remain, remainStyle := "", grayStyle
+		if showRemain {
+			remain, remainStyle = fmtRemaining(end*60 - secondOf(nowFn()))
+		}
+		boundsRow = clockBounds(fmtClock(start), fmtClock(end), remain, endStyle, remainStyle, f.width(clock), cw)
 	}
 	titleRow := center(style.Bold(true).Render(truncWidth(title, cw)), cw)
 
@@ -212,7 +238,7 @@ func (m model) standardBlockView(b resolvedBlock) string {
 			return sourceRows(r.text, r.style(), cw, m.w, min(rows, 2))
 		}
 	}
-	return m.clockView(b.Title, b.colorOf(), b.start, b.end, true, status, help)
+	return m.clockView(b.Title, b.colorOf(), b.start, b.end, true, true, status, help)
 }
 
 // a stretch with no block in it. a bounded gap knows when it ends; a day with
@@ -230,7 +256,7 @@ func (m model) freeTimeView(start, end int, bounded bool) string {
 		}
 		return []string{promptRow(m.prompt, cw)}
 	}
-	return m.clockView("FREE TIME", gray, start, end, bounded, status, help)
+	return m.clockView("FREE TIME", gray, start, end, bounded, false, status, help)
 }
 
 func (m model) sleepView(first resolvedBlock) string {

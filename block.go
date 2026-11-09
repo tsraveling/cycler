@@ -21,6 +21,9 @@ type resolvedBlock struct {
 // minutes from midnight
 func minuteOf(t time.Time) int { return t.Hour()*60 + t.Minute() }
 
+// seconds from midnight
+func secondOf(t time.Time) int { return minuteOf(t)*60 + t.Second() }
+
 func (s *dayState) override(id string) blockOverride {
 	if o, ok := s.Blocks[id]; ok {
 		return o
