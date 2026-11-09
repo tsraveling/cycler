@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.1 - 2026-11-09
+#### Bug Fixes
+- time left displays under block clock - (21459d7) - Tim Raveling
+
+- - -
+
 ## v0.2.0 - 2026-11-05
 #### Features
 - time blocks (#2) - (66513a5) - Tim Raveling
