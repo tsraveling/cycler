@@ -70,6 +70,9 @@ type model struct {
 	// the open extend control
 	ext *extendState
 
+	// what the phase watcher last saw
+	mark phaseMark
+
 	f *form
 
 	fin finishInfo
@@ -97,6 +100,7 @@ func newModel() model {
 	m.s = s
 	m.s.save()
 	m.refreshSources()
+	m.rebase()
 
 	if m.scr != scrFinish {
 		m.scr = m.homeScreen()
@@ -234,8 +238,16 @@ func (m *model) tick(now time.Time) tea.Cmd {
 	m.lastTick = now
 	m.blink = !m.blink
 
+	// a sleep leaves every clock-driven conclusion stale: the timer freezes,
+	// and the phase watcher starts over rather than announcing a boundary
+	// crossed hours ago
+	slept := delta > sleepGap
+	if slept {
+		m.rebase()
+	}
+
 	if m.s.Timer == timerGoing {
-		if delta > sleepGap {
+		if slept {
 			m.s.Timer = timerPaused
 			m.carry = 0
 			m.s.save()
@@ -266,6 +278,7 @@ func (m *model) tick(now time.Time) tea.Cmd {
 		if m.scr == scrCycler {
 			m.checkBlocks()
 		}
+		m.checkPhase()
 		stale := now.Sub(m.srcIssued) > srcStaleAfter && m.srcPending < maxSrcPending
 		if m.srcPending == 0 || stale {
 			return m.sourcesCmd()
@@ -294,6 +307,7 @@ func (m *model) checkRollover(now time.Time) {
 	m.carry = 0
 	m.ext = nil
 	m.s.save()
+	m.rebase()
 }
 
 // a running timer freezes on the way out, so its remaining time is kept

@@ -109,6 +109,7 @@ func (m *model) finishDay() {
 	m.s.save()
 	m.carry = 0
 	m.scr = scrFinish
+	m.rebase()
 }
 
 // nothing is left to run today, so only the day-level keys are live
@@ -136,6 +137,9 @@ func (m *model) advance(skipped bool) tea.Cmd {
 	m.s.advance(m.c, skipped)
 	m.carry = 0
 	m.s.save()
+	// a release hands the day straight on: the block it uncovers is announced
+	// now rather than at the next poll
+	m.checkPhase()
 	return m.sourcesCmd()
 }
 
@@ -161,6 +165,7 @@ func (m *model) passCurrent() tea.Cmd {
 	m.s.pass(m.c)
 	m.carry = 0
 	m.s.save()
+	m.checkPhase()
 	return m.sourcesCmd()
 }
 

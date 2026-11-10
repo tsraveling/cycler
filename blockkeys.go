@@ -106,6 +106,7 @@ func (m model) updateFreeDay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.s.OpenCyclerAt = minuteOf(nowFn())
 		m.s.reconcile(m.c)
 		m.s.save()
+		m.rebase()
 		return m, m.sourcesCmd()
 	}
 	return m, nil
@@ -168,6 +169,7 @@ func (m model) handleBlockPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.s.startBlockAt(m.c, idx, now)
 	}
 	m.s.save()
+	m.rebase()
 	return m, m.sourcesCmd()
 }
 
@@ -189,6 +191,7 @@ func (m model) updateExtend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.s.save()
 		}
 		m.ext = nil
+		m.rebase()
 		return m, m.sourcesCmd()
 	}
 	return m, nil
@@ -263,6 +266,80 @@ func (m *model) checkBlocks() {
 		notifyTextFn(b.Title + " ended, but " + name + " is still running. Finish or mark complete to continue.")
 		m.s.save()
 		return
+	}
+}
+
+// @region block:watch -- BOUNDARY NOTIFICATIONS
+
+// what the phase watcher last saw
+type phaseMark struct {
+	ph dayPhase
+	// the live block for phaseBlock, the one coming up for sleep and gap,
+	// nothing for the phases that concern no block
+	id, title string
+}
+
+func markOf(ph dayPhase, b resolvedBlock) phaseMark {
+	switch ph {
+	case phaseBlock, phaseGap, phaseSleep:
+		return phaseMark{ph: ph, id: b.ID, title: b.Title}
+	}
+	return phaseMark{ph: ph}
+}
+
+// moves the baseline without announcing anything. every boundary the user
+// moved by hand lands here: they were watching the screen when it moved.
+func (m *model) rebase() {
+	ph, b, _ := m.phase()
+	m.mark = markOf(ph, b)
+}
+
+// announces a boundary the clock crossed. a held cycler block still counts as
+// running, so its end is the overrun warning's to report, not this one's.
+func (m *model) checkPhase() {
+	switch m.scr {
+	case scrConfig, scrForm, scrFinish:
+		// a day being edited or summarised has no boundaries worth calling out,
+		// and the edit itself must not read as one
+		m.rebase()
+		return
+	}
+
+	ph, b, _ := m.phase()
+	cur := markOf(ph, b)
+	if cur.ph == m.mark.ph && cur.id == m.mark.id {
+		return
+	}
+	prev := m.mark
+	m.mark = cur
+
+	// a block going into overrun outranks the clock and so reads as a block
+	// starting. it is the overrun warning's to report; the release that ends
+	// it still announces what the day hands over to
+	if ph == phaseBlock && b.ID == m.s.Held {
+		return
+	}
+
+	// the ad-hoc cycler ends at midnight, where the rollover speaks instead
+	if prev.ph == phaseBlock && prev.id == openCyclerID {
+		return
+	}
+	switch {
+	case prev.ph != phaseBlock:
+		// nothing ended, so only a block beginning is worth saying
+		if ph == phaseBlock {
+			notifyTextFn("Starting " + cur.title + ".")
+		}
+	case ph == phaseBlock:
+		notifyTextFn(prev.title + " finished. Starting " + cur.title + ".")
+	case ph == phaseGap || ph == phaseSleep:
+		// how long the wait actually is, not how long it was scheduled to be:
+		// a block released early leaves more free time than its gap
+		free := max(0, b.start-minuteOf(nowFn()))
+		notifyTextFn(prev.title + " finished. You have " + fmtDur(free) +
+			" of free time before " + cur.title + ".")
+	case ph == phaseDone:
+		notifyTextFn(prev.title + " finished. Day is done!")
 	}
 }
 

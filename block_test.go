@@ -1721,3 +1721,190 @@ func TestOpenCyclerOnlyOnABlocklessDay(t *testing.T) {
 		t.Fatal("a gap between real blocks is not a blockless day")
 	}
 }
+
+// @region test:boundary -- BOUNDARY NOTIFICATIONS
+
+// one poll, the way the clock would deliver it
+func poll(m model) model {
+	m.lastPoll = m.lastTick.Add(-pollEvery)
+	return runClock(m, 1)
+}
+
+func watchNotes(t *testing.T) *[]string {
+	var notes []string
+	notifyTextFn = func(s string) { notes = append(notes, s) }
+	t.Cleanup(func() { notifyTextFn = notifyText })
+	return &notes
+}
+
+func wantNote(t *testing.T, notes []string, want string) {
+	t.Helper()
+	if len(notes) != 1 || notes[0] != want {
+		t.Fatalf("want [%q], got %v", want, notes)
+	}
+}
+
+func TestBlockHandingOverNotifies(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 59))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Deep Work", Start: hm(10, 0), End: hm(11, 0)},
+	)
+	setClock(at(10, 0))
+	m = poll(m)
+	wantNote(t, *notes, "Morning finished. Starting Deep Work.")
+}
+
+func TestBlockEndingIntoAGapNotifiesTheFreeTime(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 59))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Lunch", Start: hm(10, 20), End: hm(11, 0)},
+	)
+	setClock(at(10, 0))
+	m = poll(m)
+	wantNote(t, *notes, "Morning finished. You have 20m of free time before Lunch.")
+}
+
+func TestLastBlockEndingNotifiesTheDayIsDone(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 59))
+	notes := watchNotes(t)
+	m := withBlocks(t, block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)})
+	setClock(at(10, 0))
+	m = poll(m)
+	wantNote(t, *notes, "Morning finished. Day is done!")
+}
+
+func TestAGapEndingNotifiesTheBlockStarting(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 30))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Lunch", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	setClock(at(11, 0))
+	m = poll(m)
+	wantNote(t, *notes, "Starting Lunch.")
+}
+
+// the baseline is set at launch, so a boundary crossed before the app was
+// running is never announced after the fact
+func TestLaunchingAfterABoundaryIsSilent(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(10, 5))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Lunch", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	m = poll(m)
+	if len(*notes) != 0 {
+		t.Fatalf("want silence at launch, got %v", *notes)
+	}
+}
+
+// the user was looking at the screen when they moved the boundary themselves
+func TestFinishingABlockEarlyIsSilent(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 30))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Lunch", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	m = send(m, "f", "y")
+	if ph, _, _ := m.phase(); ph != phaseGap {
+		t.Fatalf("setup: want a gap, got %d", ph)
+	}
+	m = poll(m)
+	if len(*notes) != 0 {
+		t.Fatalf("want silence, got %v", *notes)
+	}
+}
+
+func TestExtendingPastABoundaryIsSilent(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 59))
+	notes := watchNotes(t)
+	m := withBlocks(t, block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)})
+	m = send(m, "e", "enter")
+	if bs := m.s.dayBlocks(m.c); bs[0].end != hm(10, 10) {
+		t.Fatalf("setup: want the block extended, got %+v", bs[0])
+	}
+	setClock(at(10, 1))
+	m = poll(m)
+	if len(*notes) != 0 {
+		t.Fatalf("an extended block has not ended: %v", *notes)
+	}
+}
+
+// a laptop that wakes hours later must not announce a boundary long past
+func TestSleepingPastABoundaryIsSilent(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 59))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Lunch", Start: hm(11, 0), End: hm(12, 0)},
+	)
+	setClock(at(10, 30))
+	next := m.lastTick.Add(2 * time.Minute)
+	m.lastPoll = next.Add(-pollEvery)
+	upd, _ := m.Update(tickMsg(next))
+	m = upd.(model)
+	if len(*notes) != 0 {
+		t.Fatalf("want silence after a sleep, got %v", *notes)
+	}
+	if ph, _, _ := m.phase(); ph != phaseGap {
+		t.Fatalf("setup: the boundary should have passed, got %d", ph)
+	}
+}
+
+func TestABoundaryCrossedInsideConfigIsSilent(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 59))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Morning", Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Lunch", Start: hm(10, 0), End: hm(11, 0)},
+	)
+	m = send(m, "C")
+	setClock(at(10, 1))
+	m = poll(m)
+	m = send(m, "esc")
+	m = poll(m)
+	if len(*notes) != 0 {
+		t.Fatalf("want silence across a config visit, got %v", *notes)
+	}
+}
+
+// the overrun warning says the block ended; the release says what the day
+// handed over to, and it says so at once rather than at the next poll
+func TestReleasingAHeldBlockAnnouncesWhatFollows(t *testing.T) {
+	setClock := setup(t)
+	setClock(at(9, 59))
+	notes := watchNotes(t)
+	m := withBlocks(t,
+		block{Title: "Deep Work", Type: blkCycler, Start: hm(9, 0), End: hm(10, 0)},
+		block{Title: "Lunch", Start: hm(10, 0), End: hm(11, 0)},
+	)
+	m = send(m, " ")
+	setClock(at(10, 1))
+	m = poll(m)
+	if m.s.Held == "" {
+		t.Fatal("setup: want a held block")
+	}
+	if len(*notes) != 1 {
+		t.Fatalf("a hold is the overrun warning's to report alone: %v", *notes)
+	}
+	m = send(m, "enter", "y")
+	if len(*notes) != 2 || (*notes)[1] != "Deep Work finished. Starting Lunch." {
+		t.Fatalf("want the handover announced on release, got %v", *notes)
+	}
+}

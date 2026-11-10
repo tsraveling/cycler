@@ -26,6 +26,7 @@ func (m *model) leaveConfig() tea.Cmd {
 	m.s.reconcile(m.c)
 	m.s.save()
 	m.scr = m.homeScreen()
+	m.rebase()
 	return m.sourcesCmd()
 }
 
