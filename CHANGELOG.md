@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.2 - 2026-11-10
+#### Bug Fixes
+- added end-of-block notifications - (9ef6246) - Tim Raveling
+
+- - -
+
 ## v0.2.1 - 2026-11-09
 #### Bug Fixes
 - time left displays under block clock - (21459d7) - Tim Raveling
