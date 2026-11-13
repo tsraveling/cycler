@@ -262,23 +262,19 @@ func TestPrompts(t *testing.T) {
 	}
 }
 
-func TestPreviousDayFinish(t *testing.T) {
+func TestPreviousDayResetsSilently(t *testing.T) {
 	setClock := setup(t)
 	m := withItems(t, "A", "B")
 	m = send(m, "enter", "y")
 	m.s.save()
 
+	// yesterday's work is not recapped at startup
 	setClock(testNow.Add(24 * time.Hour))
 	m = newModel()
-	if m.scr != scrFinish || !strings.Contains(m.View(), "Wednesday, October 21") {
-		t.Fatal("previous day should show finish")
-	}
-	m = send(m, "q")
 	if m.scr != scrCycler || len(m.s.Log) != 0 || m.s.Date != "2026-10-22" {
 		t.Fatalf("should reset into today: %+v", m.s)
 	}
 
-	// nothing done yesterday: silent reset
 	setClock(testNow.Add(48 * time.Hour))
 	m = newModel()
 	if m.scr != scrCycler {
@@ -299,8 +295,8 @@ func TestMidnightRollsOver(t *testing.T) {
 
 	setClock(time.Date(2026, 10, 22, 0, 1, 0, 0, time.Local))
 	m = newModel()
-	if m.scr != scrFinish {
-		t.Fatal("past midnight should close out the previous day")
+	if m.scr != scrCycler {
+		t.Fatal("past midnight should land on today, not a recap")
 	}
 	if len(m.s.Log) != 0 {
 		t.Fatalf("new day should start empty: %+v", m.s)

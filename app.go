@@ -86,14 +86,9 @@ func newModel() model {
 	m := model{c: loadConfig(), w: 80, h: 24, lastTick: now, lastSave: now, lastPoll: now}
 
 	s := loadState()
-	switch {
-	case s == nil:
-		s = freshState(today, m.c)
-	case s.Date != today:
-		if len(s.Log) > 0 {
-			m.fin = finishFor(s)
-			m.scr = scrFinish
-		}
+	// a stale day is reset silently: startup lands on today's work, not on a
+	// recap of yesterday
+	if s == nil || s.Date != today {
 		s = freshState(today, m.c)
 	}
 	s.reconcile(m.c)
@@ -102,9 +97,7 @@ func newModel() model {
 	m.refreshSources()
 	m.rebase()
 
-	if m.scr != scrFinish {
-		m.scr = m.homeScreen()
-	}
+	m.scr = m.homeScreen()
 	return m
 }
 
@@ -287,8 +280,8 @@ func (m *model) tick(now time.Time) tea.Cmd {
 	return nil
 }
 
-// a new logical day arriving mid-session ends the old one, but never under an
-// open prompt. a running timer no longer holds it off: the day now turns at
+// a new logical day arriving mid-session silently resets into it, but never
+// under an open prompt. a running timer no longer holds it off: the day now turns at
 // midnight, so holding off would leave s.Date on yesterday while every block
 // decision resolves against today's wall clock.
 func (m *model) checkRollover(now time.Time) {
@@ -298,10 +291,6 @@ func (m *model) checkRollover(now time.Time) {
 	today := logicalDate(now)
 	if m.s.Date == today {
 		return
-	}
-	if len(m.s.Log) > 0 {
-		m.fin = finishFor(m.s)
-		m.scr = scrFinish
 	}
 	m.s = freshState(today, m.c)
 	m.carry = 0
