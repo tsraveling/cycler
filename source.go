@@ -77,7 +77,7 @@ func (r sourceResult) subStyle() lipgloss.Style {
 	if r.subWarn {
 		return redStyle
 	}
-	return grayStyle
+	return lightGrayStyle
 }
 
 // the main line and its subline, ready for the panel

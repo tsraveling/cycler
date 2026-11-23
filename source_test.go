@@ -118,7 +118,7 @@ func TestReadSource(t *testing.T) {
 }
 
 func TestSourceRows(t *testing.T) {
-	l := statusLine{text: "main", sub: "under", style: srcStyle, subStyle: grayStyle}
+	l := statusLine{text: "main", sub: "under", style: srcStyle, subStyle: lightGrayStyle}
 	cases := []struct {
 		name string
 		line statusLine
@@ -137,7 +137,7 @@ func TestSourceRows(t *testing.T) {
 	}
 
 	// the main line keeps its two rows and the sub never squeezes them out
-	long := statusLine{text: strings.Repeat("word ", 40), sub: strings.Repeat("note ", 40), style: srcStyle, subStyle: grayStyle}
+	long := statusLine{text: strings.Repeat("word ", 40), sub: strings.Repeat("note ", 40), style: srcStyle, subStyle: lightGrayStyle}
 	if got := len(sourceRows(long, 40, 60, 4)); got != 4 {
 		t.Errorf("long: got %d rows, want 4", got)
 	}
