@@ -210,8 +210,7 @@ func (m model) cyclerView() string {
 		if m.ext != nil {
 			return m.extendRows(cw, rows)
 		}
-		text, style := m.sourceLine()
-		return sourceRows(text, style, cw, w, rows)
+		return sourceRows(m.sourceLine(), cw, w, rows)
 	}
 
 	var block []string
@@ -291,15 +290,15 @@ func (m model) timerLines(cw int) []string {
 
 // the line under the timer: an open prompt, the upcoming item once this one
 // is done, or the current item's source
-func (m model) sourceLine() (string, lipgloss.Style) {
+func (m model) sourceLine() statusLine {
 	if m.prompt != nil {
-		return m.prompt.prompt + " y/n", promptStyle
+		return statusLine{text: m.prompt.prompt + " y/n", style: promptStyle}
 	}
 	if m.s.Held != "" {
 		// today's end, which an earlier extend or cascade may have moved
 		for _, b := range m.s.dayBlocks(m.c) {
 			if b.ID == m.s.Held {
-				return "Block ended at " + fmtClock(b.end) + " — finish to continue", redStyle
+				return statusLine{text: "Block ended at " + fmtClock(b.end) + " — finish to continue", style: redStyle}
 			}
 		}
 	}
@@ -307,12 +306,11 @@ func (m model) sourceLine() (string, lipgloss.Style) {
 		if up := m.s.upcoming(m.c); up >= 0 {
 			next := m.c.Items[up]
 			r := m.src[next.ID]
-			return "Next: " + next.Name + ": " + r.text, r.style()
+			return statusLine{text: "Next: " + next.Name + ": " + r.text, style: r.style()}
 		}
-		return "Last one today", grayStyle
+		return statusLine{text: "Last one today", style: grayStyle}
 	}
-	r := m.src[m.s.Current]
-	return r.text, r.style()
+	return m.src[m.s.Current].line()
 }
 
 func (m model) dateLabel() string {

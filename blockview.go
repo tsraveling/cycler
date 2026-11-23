@@ -12,6 +12,12 @@ import (
 // the block's final stretch, where the end time starts warning
 const endWarnMins = 5
 
+// rows the main status line and its subline may each wrap into
+const (
+	srcMainRows = 2
+	srcSubRows  = 2
+)
+
 // the day's blocks as a trail. cur is the crumb the window scrolls to keep.
 func (m model) blockCrumbs() ([]crumb, int) {
 	bs := m.s.dayBlocks(m.c)
@@ -160,7 +166,7 @@ func (m model) clockView(title string, color lipgloss.TerminalColor, start, end 
 
 	// the status is sized first and then never dropped: the ladder below sheds
 	// the art around it, rather than shedding the thing a keypress will answer
-	budget := max(0, min(2, region-2))
+	budget := max(0, min(srcMainRows+srcSubRows, region-2))
 	if budget == 0 && (m.ext != nil || m.prompt != nil) {
 		budget = 1
 	}
@@ -210,15 +216,29 @@ func promptRow(c *confirm, cw int) string {
 	return center(promptStyle.Render(body+tail), cw)
 }
 
-// the centered, wrapped source output shared by the cycler timer and a block
-func sourceRows(text string, style lipgloss.Style, cw, w, maxRows int) []string {
+// a status line and the subline under it, if any
+type statusLine struct {
+	text, sub       string
+	style, subStyle lipgloss.Style
+}
+
+// the centered, wrapped source output shared by the cycler timer and a block.
+// the main line is fed first and never gives up a row to the subline.
+func sourceRows(l statusLine, cw, w, maxRows int) []string {
 	if maxRows < 1 {
 		return nil
 	}
 	srcW := max(10, min(cw, w-2-16))
 	out := make([]string, 0, maxRows)
-	for _, l := range wrapCapped(text, srcW, maxRows) {
-		out = append(out, center(style.Render(l), cw))
+	for _, r := range wrapCapped(l.text, srcW, min(maxRows, srcMainRows)) {
+		out = append(out, center(l.style.Render(r), cw))
+	}
+	room := min(maxRows-len(out), srcSubRows)
+	if l.sub == "" || room < 1 {
+		return out
+	}
+	for _, r := range wrapCapped(l.sub, srcW, room) {
+		out = append(out, center(l.subStyle.Render(r), cw))
 	}
 	return out
 }
@@ -234,8 +254,7 @@ func (m model) standardBlockView(b resolvedBlock) string {
 		case m.prompt != nil:
 			return []string{promptRow(m.prompt, cw)}
 		default:
-			r := m.src[b.ID]
-			return sourceRows(r.text, r.style(), cw, m.w, min(rows, 2))
+			return sourceRows(m.src[b.ID].line(), cw, m.w, rows)
 		}
 	}
 	return m.clockView(b.Title, b.colorOf(), b.start, b.end, true, true, status, help)
