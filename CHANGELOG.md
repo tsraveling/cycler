@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.5 - 2026-11-23
+#### Bug Fixes
+- tweaks subtask status color - (130ae2d) - Tim Raveling
+
+- - -
+
 ## v0.2.4 - 2026-11-23
 #### Bug Fixes
 - added subtask view - (9aa22da) - Tim Raveling
