@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.4 - 2026-11-23
+#### Bug Fixes
+- added subtask view - (9aa22da) - Tim Raveling
+
+- - -
+
 ## v0.2.3 - 2026-11-13
 #### Bug Fixes
 - day starts in block rather than summary mode now - (bb72018) - Tim Raveling
