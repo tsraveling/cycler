@@ -206,9 +206,14 @@ func (m model) detailRows(w, rows int) []string {
 		row("Name", it.Name, boldStyle),
 		row("Timer", fmtTime(it.Seconds), textStyle),
 		row("Per day", limit, limitStyle),
+	}
+	if it.StartLoop > 0 {
+		out = append(out, row("Starts", fmt.Sprintf("loop %d", it.StartLoop), textStyle))
+	}
+	out = append(out,
 		row("Active", it.daysLabel(), daysStyle),
 		row("Source", it.Source.label(), textStyle),
-	}
+	)
 	r := m.src[it.ID]
 	for _, l := range wrapCapped(r.text, vw, max(1, rows-len(out))) {
 		out = append(out, spaces(labelW)+r.style().Render(l))

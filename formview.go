@@ -116,6 +116,18 @@ func (f *form) timesView() string {
 	return textStyle.Render(in.Value())
 }
 
+// an unset start loop reads as 0, the start of the day
+func (f *form) startLoopView() string {
+	in := f.ins[fStartLoop][0]
+	if f.inCell(fStartLoop, 0) {
+		return in.View()
+	}
+	if in.Value() == "" {
+		return grayStyle.Render("0")
+	}
+	return textStyle.Render(in.Value())
+}
+
 // ◀ label ▶, in the given style, dimmed when the line is disabled
 func (f *form) picker(fl field, label string, body lipgloss.Style) string {
 	for _, l := range f.lines() {
@@ -250,6 +262,8 @@ func (m model) formView() string {
 			lines = append(lines, field(fTimer, "Timer", f.timerView())...)
 			lines = append(lines, "")
 			lines = append(lines, field(fTimes, "Times per day", f.timesView())...)
+			lines = append(lines, "")
+			lines = append(lines, field(fStartLoop, "Start at loop", f.startLoopView())...)
 			lines = append(lines, "")
 		}
 

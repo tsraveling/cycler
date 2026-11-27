@@ -18,6 +18,7 @@ const (
 	fName field = iota
 	fTimer
 	fTimes
+	fStartLoop
 	fTitle
 	fType
 	fColor
@@ -58,9 +59,9 @@ type formLine struct {
 
 // every mutable field, flattened so dirty tracking stays a struct compare
 type formValues struct {
-	name, mins, secs, times, days, src string
-	title, sh, sm, eh, em              string
-	typ, btyp, color                   int
+	name, mins, secs, times, start, days, src string
+	title, sh, sm, eh, em                     string
+	typ, btyp, color                          int
 }
 
 type form struct {
@@ -107,13 +108,14 @@ func newItemForm(it *item, w int) *form {
 	f := &form{kind: formItem, focus: fName}
 	f.base()
 	name, mins, secs, times := newInput(maxNameLen), newInput(3), newInput(2), newInput(2)
-	src := newInput(0)
+	start, src := newInput(2), newInput(0)
 	name.Placeholder = "Name"
 	mins.Placeholder = "0"
 	secs.Placeholder = "00"
 	f.ins[fName] = []*textinput.Model{name}
 	f.ins[fTimer] = []*textinput.Model{mins, secs}
 	f.ins[fTimes] = []*textinput.Model{times}
+	f.ins[fStartLoop] = []*textinput.Model{start}
 	f.ins[fSrc] = []*textinput.Model{src}
 
 	if it != nil {
@@ -123,6 +125,9 @@ func newItemForm(it *item, w int) *form {
 		secs.SetValue(fmt.Sprintf("%02d", it.Seconds%60))
 		if it.TimesPerDay > 0 {
 			times.SetValue(strconv.Itoa(it.TimesPerDay))
+		}
+		if it.StartLoop > 0 {
+			start.SetValue(strconv.Itoa(it.StartLoop))
 		}
 		f.days = normalizeDays(it.ActiveDays)
 		src.SetValue(it.SourceConfig)
@@ -193,7 +198,8 @@ func (f *form) val(fl field, cell int) string {
 func (f *form) values() formValues {
 	return formValues{
 		name: f.val(fName, 0), mins: f.val(fTimer, 0), secs: f.val(fTimer, 1),
-		times: timesKey(f.val(fTimes, 0)), days: daysKey(f.days), src: f.val(fSrc, 0),
+		times: numKey(f.val(fTimes, 0)), start: numKey(f.val(fStartLoop, 0)),
+		days: daysKey(f.days), src: f.val(fSrc, 0),
 		title: f.val(fTitle, 0),
 		sh:    f.val(fStart, 0), sm: f.val(fStart, 1),
 		eh: f.val(fEnd, 0), em: f.val(fEnd, 1),
@@ -201,9 +207,9 @@ func (f *form) values() formValues {
 	}
 }
 
-// every spelling of no limit compares equal, so typing a bare 0 into an
-// unlimited item is not an edit
-func timesKey(v string) string {
+// every spelling of zero compares equal, so typing a bare 0 into a field
+// already at its default is not an edit
+func numKey(v string) string {
 	n, err := strconv.Atoi(v)
 	if err != nil || n == 0 {
 		return ""
@@ -244,6 +250,7 @@ func (f *form) lines() []formLine {
 		{f: fName, text: true, cells: 1},
 		{f: fTimer, text: true, cells: 2},
 		{f: fTimes, text: true, cells: 1},
+		{f: fStartLoop, text: true, cells: 1},
 		{f: fDays, cells: 1},
 		{f: fSrcType, cells: 1},
 		{f: fSrc, text: true, cells: 1},
@@ -316,9 +323,11 @@ func (f *form) commit() {
 	f.editing = false
 	f.cell = 0
 	f.blurAll()
-	// a limit of zero is no limit, which reads as an empty field
-	if n, err := strconv.Atoi(f.val(fTimes, 0)); err == nil && n == 0 {
-		f.ins[fTimes][0].SetValue("")
+	// zero is the default for both, which reads as an empty field
+	for _, fl := range []field{fTimes, fStartLoop} {
+		if n, err := strconv.Atoi(f.val(fl, 0)); err == nil && n == 0 {
+			f.ins[fl][0].SetValue("")
+		}
 	}
 }
 
@@ -621,7 +630,7 @@ func (f *form) toggleDay() {
 // lines whose input only accepts digits
 func (f *form) numeric() bool {
 	switch f.focus {
-	case fTimer, fTimes, fStart, fEnd:
+	case fTimer, fTimes, fStartLoop, fStart, fEnd:
 		return true
 	}
 	return false
@@ -651,6 +660,8 @@ func (f *form) updateNumber(msg tea.KeyMsg) tea.Cmd {
 		}
 	case fTimes:
 		limit = maxTimesPerDay
+	case fStartLoop:
+		limit = maxStartLoop
 	}
 	if v := in.Value(); limit >= 0 && v != "" {
 		if n, err := strconv.Atoi(v); err != nil || n > limit {
@@ -690,11 +701,13 @@ func (m *model) saveItemForm() tea.Cmd {
 	}
 
 	times, _ := strconv.Atoi(f.val(fTimes, 0))
+	startLoop, _ := strconv.Atoi(f.val(fStartLoop, 0))
 	it := item{
 		ID:           f.editID,
 		Name:         name,
 		Seconds:      secs,
 		TimesPerDay:  max(0, times),
+		StartLoop:    clamp(startLoop, 0, maxStartLoop),
 		ActiveDays:   normalizeDays(f.days),
 		Source:       sourceTypes[f.typ],
 		SourceConfig: strings.TrimSpace(f.val(fSrc, 0)),

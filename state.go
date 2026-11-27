@@ -58,6 +58,9 @@ type dayState struct {
 	CycleDone []string `json:"cycleDone"`
 	// item IDs stepped over for this cycle only, unlogged
 	Passed []string `json:"passed"`
+	// cycles closed today, so the current one is this index. gates items by
+	// their start loop.
+	Cycle int `json:"cycle"`
 	// today's drift from the configured block windows
 	Blocks map[string]blockOverride `json:"blockOverrides"`
 	// the cycler block the running timer belongs to. recorded while the block
@@ -147,8 +150,11 @@ func (s *dayState) countToday(id string) int {
 }
 
 // runs on today's weekday and has repeats left
-func (s *dayState) eligible(it item) bool {
-	if !it.activeOn(s.weekday()) {
+func (s *dayState) eligible(it item) bool { return s.eligibleAt(it, s.Cycle) }
+
+// eligible as of a given cycle, so a lookahead can ask about the next one
+func (s *dayState) eligibleAt(it item, loop int) bool {
+	if !it.activeOn(s.weekday()) || loop < it.StartLoop {
 		return false
 	}
 	return it.TimesPerDay < 1 || s.countToday(it.ID) < it.TimesPerDay
@@ -209,6 +215,7 @@ func (s *dayState) closeCycle() {
 	}
 	s.CycleDone = nil
 	s.Passed = nil
+	s.Cycle++
 }
 
 // logs the current item and moves to the next, wrapping into a new cycle
@@ -223,8 +230,7 @@ func (s *dayState) advance(c *config, skipped bool) {
 	s.Log = append(s.Log, entry{ItemID: s.Current, Name: c.Items[i].Name, Skipped: skipped, Last: next < 0})
 	s.CycleDone = append(s.CycleDone, s.Current)
 	if next < 0 {
-		s.CycleDone = nil
-		s.Passed = nil
+		s.closeCycle()
 		next = s.firstEligible(c)
 	}
 	s.setCurrent(c, next)
@@ -283,7 +289,8 @@ func (s *dayState) upcoming(c *config) int {
 		if it.ID == s.Current && it.TimesPerDay > 0 && s.countToday(it.ID)+1 >= it.TimesPerDay {
 			continue
 		}
-		if s.eligible(it) {
+		// the wrap lands in the next cycle, which may admit items this one did not
+		if s.eligibleAt(it, s.Cycle+1) {
 			return i
 		}
 	}

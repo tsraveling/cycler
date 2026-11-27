@@ -872,3 +872,101 @@ func TestUnreadableDaysFallBackToEveryDay(t *testing.T) {
 		t.Fatalf("a day list nothing survives should not silently mean never, got %q", got)
 	}
 }
+
+func TestStartLoopDefersItem(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"}, item{Name: "B"}, item{Name: "C"}, item{Name: "D", StartLoop: 1})
+
+	want := []string{"A", "B", "C", "A", "B", "C", "D", "A"}
+	var got []string
+	for range want {
+		got = append(got, m.c.byID(m.s.Current).Name)
+		m = send(m, "enter", "y")
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("order: %v", got)
+	}
+	if m.s.Cycle != 2 {
+		t.Fatalf("two closed cycles: %d", m.s.Cycle)
+	}
+}
+
+func TestStartLoopHiddenUntilItsCycle(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"}, item{Name: "D", StartLoop: 1})
+
+	cs, _ := m.crumbs()
+	if len(cs) != 1 || !strings.Contains(cs[0].text, "A") {
+		t.Fatalf("D should be out of the first cycle's trail: %v", cs)
+	}
+	m = send(m, "enter", "y")
+	if cs, _ = m.crumbs(); len(cs) != 2 {
+		t.Fatalf("D should join the trail in loop 1: %v", cs)
+	}
+}
+
+// an item whose repeats run out mid-day hands the cycle on to one that only
+// opens in the next loop, rather than ending the day
+func TestStartLoopOpensAfterLimitExhausts(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A", TimesPerDay: 1}, item{Name: "D", StartLoop: 1})
+	d := m.c.Items[1].ID
+
+	m = runClock(send(m, " "), 60)
+	if m.s.Timer != timerDone {
+		t.Fatalf("timer should finish: %+v", m.s)
+	}
+	if up := m.s.upcoming(m.c); up < 0 || m.c.Items[up].ID != d {
+		t.Fatalf("D is next, in the cycle it opens in: %d", up)
+	}
+	m = send(m, "enter")
+	if m.s.Current != d || m.s.Cycle != 1 {
+		t.Fatalf("A is used up, so loop 1 starts on D: %+v", m.s)
+	}
+}
+
+func TestRaisingStartLoopHandsOff(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"}, item{Name: "B"})
+	b := m.c.Items[1].ID
+
+	m = send(m, "C", "e")
+	m = editField(m, fStartLoop)
+	m = typeText(m, "1")
+	m = saveFormKeys(m)
+	m = send(m, "esc")
+	if m.c.Items[0].StartLoop != 1 {
+		t.Fatalf("start loop should save: %+v", m.c.Items[0])
+	}
+	if m.s.Current != b {
+		t.Fatalf("an item deferred past this loop should hand off: %+v", m.s)
+	}
+}
+
+func TestZeroStartLoopIsNotAnEdit(t *testing.T) {
+	setup(t)
+	m := withSched(t, item{Name: "A"})
+	m = send(m, "C", "e")
+	m = editField(m, fStartLoop)
+	m = typeText(m, "0")
+	if m.f.dirty() {
+		t.Fatal("a typed 0 matches the default")
+	}
+	m = saveFormKeys(m)
+	if m.c.Items[0].StartLoop != 0 {
+		t.Fatalf("0 should stay 0: %+v", m.c.Items[0])
+	}
+}
+
+func TestLoadConfigClampsStartLoop(t *testing.T) {
+	setup(t)
+	c := &config{Items: []item{
+		{ID: newID(), Name: "A", Seconds: 60, Source: srcStatic, StartLoop: -3, ActiveDays: allDays()},
+		{ID: newID(), Name: "B", Seconds: 60, Source: srcStatic, StartLoop: 500, ActiveDays: allDays()},
+	}}
+	c.save()
+	got := loadConfig()
+	if got.Items[0].StartLoop != 0 || got.Items[1].StartLoop != maxStartLoop {
+		t.Fatalf("start loop should clamp: %+v", got.Items)
+	}
+}

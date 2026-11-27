@@ -22,6 +22,7 @@ const (
 	maxTitleLen    = 24
 	maxMinutes     = 180
 	maxTimesPerDay = 99
+	maxStartLoop   = 99
 	minsPerDay     = 24 * 60
 )
 
@@ -31,6 +32,8 @@ type item struct {
 	Seconds int    `json:"seconds"`
 	// repeats allowed per day; 0 is no limit
 	TimesPerDay int `json:"timesPerDay"`
+	// cycle the item first appears in; 0 is from the start of the day
+	StartLoop int `json:"startLoop"`
 	// time.Weekday values the item runs on; empty is never
 	ActiveDays   []int      `json:"activeDays"`
 	Source       sourceType `json:"source"`
@@ -204,6 +207,10 @@ func loadConfig() *config {
 		}
 		if it.TimesPerDay > maxTimesPerDay {
 			it.TimesPerDay = maxTimesPerDay
+			repaired = true
+		}
+		if l := clamp(it.StartLoop, 0, maxStartLoop); l != it.StartLoop {
+			it.StartLoop = l
 			repaired = true
 		}
 		// a day list that is missing, or that nothing survives, means every day.
