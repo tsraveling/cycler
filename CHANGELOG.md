@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.6 - 2026-11-27
+#### Bug Fixes
+- added loop starts - (6008bb2) - Tim Raveling
+
+- - -
+
 ## v0.2.5 - 2026-11-23
 #### Bug Fixes
 - tweaks subtask status color - (130ae2d) - Tim Raveling
